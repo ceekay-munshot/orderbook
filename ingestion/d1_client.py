@@ -191,3 +191,25 @@ class D1Client:
             f"updated_at = datetime('now')"
         )
         return self.query(sql, params)
+
+    def existing_dedup_keys(self, keys: Sequence[str]) -> set[str]:
+        """Return the subset of `keys` already present in the orders table.
+
+        Used to skip announcements we've already ingested. Queries in chunks to
+        keep each SQL statement small.
+        """
+        wanted = [k for k in keys if k]
+        found: set[str] = set()
+        chunk = 100
+        for i in range(0, len(wanted), chunk):
+            batch = wanted[i : i + chunk]
+            placeholders = ", ".join("?" for _ in batch)
+            rows = self.query(
+                f"SELECT dedup_key FROM orders WHERE dedup_key IN ({placeholders})",
+                batch,
+            )
+            for row in rows:
+                key = row.get("dedup_key")
+                if key:
+                    found.add(key)
+        return found

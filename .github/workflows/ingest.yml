@@ -4,6 +4,12 @@ name: Ingest order-book filings
 # A scheduled trigger is added in a later step — see the commented block below.
 on:
   workflow_dispatch:
+    inputs:
+      days:
+        description: "How many days back to fetch BSE announcements (INGEST_DAYS)"
+        required: false
+        default: "2"
+        type: string
   # schedule:
   #   # Every 6 hours (UTC). Enable once real ingestion is in place.
   #   - cron: "0 */6 * * *"
@@ -28,17 +34,20 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run ingestion
+      - name: Run BSE reader
         run: python main.py
         env:
-          # Required secrets
+          # Fetch window (from the "days" input; defaults to 2)
+          INGEST_DAYS: ${{ inputs.days }}
+          # Proxy + APIs
+          SCRAPEDO_API_KEY: ${{ secrets.SCRAPEDO_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           FIRECRAWL_API_KEY: ${{ secrets.FIRECRAWL_API_KEY }}
-          SCRAPEDO_API_KEY: ${{ secrets.SCRAPEDO_API_KEY }}
+          # Cloudflare D1 (may be empty for now -> the reader runs in DRY-RUN mode)
           CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
           CF_D1_DATABASE_ID: ${{ secrets.CF_D1_DATABASE_ID }}
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
-          # Optional secrets
+          # Optional
           SCREENER_EMAIL: ${{ secrets.SCREENER_EMAIL }}
           SCREENER_PASSWORD: ${{ secrets.SCREENER_PASSWORD }}
           MUNS_TOKEN: ${{ secrets.MUNS_TOKEN }}

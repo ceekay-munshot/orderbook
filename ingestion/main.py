@@ -1,42 +1,170 @@
-"""Entrypoint for the orderbook ingestion pipeline.
+"""Entrypoint for the orderbook ingestion pipeline — Step 3: the BSE reader.
 
-For now this only performs a readiness check: it reports which configuration
-keys are present (never their values) and exits cleanly. Real ingestion —
-fetching BSE filings, parsing PDFs, extracting fields with OpenAI, and writing
-rows to Cloudflare D1 — is wired up in later steps.
+Fetches real order announcements from BSE for a date range, filters to
+order-related filings, dedups, and writes the announcement metadata into the
+`orders` table (the 5 extracted fields stay NULL — Steps 4-5 fill them). Runs in
+GitHub Actions. If the Cloudflare D1 secrets aren't set it runs in DRY-RUN mode
+(logs what it would write) instead of crashing.
+
+Env:
+  SCRAPEDO_API_KEY                         -> fetch through the Scrape.do proxy
+  CF_ACCOUNT_ID / CF_D1_DATABASE_ID / CF_API_TOKEN -> write to remote D1 (all
+                                              required to write; else DRY-RUN)
+  INGEST_DAYS (default 2)                   -> fetch window = today-INGEST_DAYS..today
+  INGEST_FROM_DATE / INGEST_TO_DATE (YYYY-MM-DD, optional) -> explicit overrides
 """
 
 from __future__ import annotations
 
-from config import OPTIONAL_KEYS, REQUIRED_KEYS, Config
+import datetime
+import os
+
+from bse_client import BSEReader, iter_matched
+from config import Config
+from d1_client import D1Client, compute_dedup_key
+from scrapedo_client import ScrapedoClient
+
+
+def _int_env(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if not raw:
+        return default
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return default
+
+
+def resolve_date_range() -> tuple[datetime.date, datetime.date]:
+    """Resolve [from_date, to_date] from INGEST_* env vars."""
+    today = datetime.date.today()
+    to_raw = os.getenv("INGEST_TO_DATE")
+    from_raw = os.getenv("INGEST_FROM_DATE")
+    to_date = datetime.date.fromisoformat(to_raw) if to_raw else today
+    if from_raw:
+        from_date = datetime.date.fromisoformat(from_raw)
+    else:
+        from_date = to_date - datetime.timedelta(days=_int_env("INGEST_DAYS", 2))
+    return from_date, to_date
+
+
+def db_configured(config: Config) -> bool:
+    """True only when all three Cloudflare D1 credentials are present."""
+    return all(
+        bool(v)
+        for v in (config.cf_account_id, config.cf_d1_database_id, config.cf_api_token)
+    )
+
+
+def _fmt(order: dict, rule: str, detail: str | None) -> str:
+    tag = f"{rule}:{detail}" if detail else rule
+    headline = (order.get("headline") or "")[:80]
+    return (
+        f"[{tag}] {order['company_name']} | {order.get('filed_at')} | "
+        f"{headline} | {order.get('attachment_url')}"
+    )
 
 
 def main() -> int:
     config = Config.from_env()
-    presence = config.presence()
+    from_date, to_date = resolve_date_range()
 
-    print("orderbook ingestion — readiness check")
-    print("=" * 38)
+    print("orderbook BSE reader")
+    print("=" * 40)
+    print(f"date range : {from_date} -> {to_date}")
 
-    print("\nRequired secrets:")
-    for key in REQUIRED_KEYS:
-        mark = "✓ set    " if presence[key] else "✗ missing"
-        print(f"  [{mark}] {key}")
-
-    print("\nOptional secrets:")
-    for key in OPTIONAL_KEYS:
-        mark = "✓ set    " if presence[key] else "· unset  "
-        print(f"  [{mark}] {key}")
-
-    missing = config.missing_required()
-    print()
-    if missing:
-        print(f"NOTE: {len(missing)} required secret(s) not set: {', '.join(missing)}")
-        print("Real ingestion will need these before it can write to D1.")
+    # --- fetch ---------------------------------------------------------------
+    scrapedo = ScrapedoClient.from_config(config) if config.scrapedo_api_key else None
+    if scrapedo is not None:
+        print("fetch mode : Scrape.do proxy")
     else:
-        print("All required secrets present — ready to ingest (in a later step).")
+        print("fetch mode : direct (best-effort — no SCRAPEDO_API_KEY; BSE usually "
+              "blocks datacenter IPs)")
 
-    print("\nScaffold OK. No data was fetched or written.")
+    reader = BSEReader(scrapedo=scrapedo)
+    try:
+        announcements = reader.fetch_range(from_date, to_date)
+    except Exception as exc:  # noqa: BLE001 - never crash the workflow on fetch
+        print(f"\nERROR: fetch failed: {type(exc).__name__}: {exc}")
+        print("Could not fetch announcements from BSE. Exiting without changes.")
+        return 0
+
+    if not announcements:
+        if scrapedo is not None:
+            print("\nFetched 0 announcements (nothing filed in range, or upstream "
+                  "returned no data).")
+        else:
+            print("\nDirect fetch returned no data — BSE blocks datacenter IPs "
+                  "(\"No Record Found!\").")
+            print("Set the SCRAPEDO_API_KEY secret so the workflow can fetch "
+                  "through the proxy.")
+        print("Nothing to do.")
+        return 0
+
+    print(f"fetched    : {len(announcements)} announcements")
+
+    # --- filter + parse ------------------------------------------------------
+    matched: list[tuple[dict, str, str | None]] = []
+    subcat_n = keyword_n = 0
+    for order, rule, detail in iter_matched(announcements):
+        order["dedup_key"] = compute_dedup_key(order)
+        matched.append((order, rule, detail))
+        if rule == "subcat":
+            subcat_n += 1
+        else:
+            keyword_n += 1
+    print(f"order-match: {len(matched)} (subcat {subcat_n} / keyword {keyword_n})")
+
+    # dedup within this batch (keep first occurrence of each dedup_key)
+    seen: set[str] = set()
+    deduped: list[tuple[dict, str, str | None]] = []
+    for order, rule, detail in matched:
+        key = order["dedup_key"]
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append((order, rule, detail))
+
+    # --- decide write vs dry-run + dedup against DB --------------------------
+    writing = db_configured(config)
+    client: D1Client | None = None
+    if writing:
+        client = D1Client.from_config(config)
+        try:
+            existing = client.existing_dedup_keys([o["dedup_key"] for o, _, _ in deduped])
+        except Exception as exc:  # noqa: BLE001
+            print(f"WARNING: could not query existing dedup keys ({exc}); "
+                  "relying on ON CONFLICT to dedup.")
+            existing = set()
+        new_items = [t for t in deduped if t[0]["dedup_key"] not in existing]
+        already = len(deduped) - len(new_items)
+        print(f"\nWRITE mode : {len(new_items)} new "
+              f"({already} already in D1) -> writing to remote D1")
+    else:
+        new_items = deduped
+        print(f"\nDRY-RUN    : {len(new_items)} new (D1 secrets not set — not writing; "
+              "can't dedup against DB)")
+
+    # --- write / log ---------------------------------------------------------
+    wrote = 0
+    for order, rule, detail in new_items:
+        if writing and client is not None:
+            try:
+                client.upsert_order(order)
+                wrote += 1
+                print("  wrote       " + _fmt(order, rule, detail))
+            except Exception as exc:  # noqa: BLE001
+                print(f"  FAILED ({exc}) " + _fmt(order, rule, detail))
+        else:
+            print("  would-write " + _fmt(order, rule, detail))
+
+    # --- summary -------------------------------------------------------------
+    verb, count = ("wrote", wrote) if writing else ("would-write", len(new_items))
+    print(
+        f"\nsummary: fetched {len(announcements)}, "
+        f"order-matched {len(matched)} (subcat {subcat_n} / keyword {keyword_n}), "
+        f"new {len(new_items)}, {verb} {count}"
+    )
     return 0
 
 
