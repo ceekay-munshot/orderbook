@@ -56,11 +56,10 @@ def db_configured(config: Config) -> bool:
 
 
 def _fmt(order: dict, rule: str, detail: str | None) -> str:
-    tag = f"{rule}:{detail}" if detail else rule
-    headline = (order.get("headline") or "")[:80]
+    val = order.get("order_value_text") or "value→PDF"
+    headline = (order.get("headline") or "")[:64]
     return (
-        f"[{tag}] {order['company_name']} | {order.get('filed_at')} | "
-        f"{headline} | {order.get('attachment_url')}"
+        f"{order['company_name']} | {val} | {order.get('filed_at')} | {headline}"
     )
 
 
@@ -152,11 +151,12 @@ def main() -> int:
             print("  would-write " + _fmt(order, rule, detail))
 
     # --- summary -------------------------------------------------------------
+    with_value = sum(1 for o, _, _ in new_items if o.get("order_value_text"))
     verb, count = ("wrote", wrote) if writing else ("would-write", len(new_items))
     print(
-        f"\nsummary: fetched {len(announcements)}, "
-        f"order-matched {len(matched)} (subcat {subcat_n} / keyword {keyword_n}), "
-        f"new {len(new_items)}, {verb} {count}"
+        f"\nsummary: fetched {len(announcements)} order announcements, "
+        f"new {len(new_items)}, value-from-summary {with_value}"
+        f" ({len(new_items) - with_value} need PDF), {verb} {count}"
     )
     return 0
 

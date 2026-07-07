@@ -24,6 +24,7 @@ import json
 import re
 import time
 from typing import Any, Callable, Iterable
+from urllib.parse import quote
 
 import requests
 
@@ -60,7 +61,9 @@ BROWSER_HEADERS = {
 
 # --- order classification ----------------------------------------------------
 
-# PRIMARY: exact BSE subcategory.
+# PRIMARY: exact BSE subcategory. We ask BSE to filter to this directly (its own
+# dropdown), so it returns ONLY order wins — clean, no keyword noise.
+ORDER_CATEGORY = "Company Update"
 ORDER_SUBCATEGORY = "Award of Order / Receipt of Order"
 
 # FALLBACK: keywords for order filings mis-filed under General/Company Update.
@@ -155,10 +158,54 @@ def _scrip_to_str(scrip: Any) -> str | None:
     return s.zfill(6) if s.isdigit() else s  # keep 6-digit form / leading zeros
 
 
+# Rupee amount in the announcement text, e.g. "Rs. 10.85 Crores", "Rs. 47.38
+# Lakhs", "Rs. 36,95,760" (plain rupees). Unit is optional.
+_VALUE_RE = re.compile(
+    r"(?:rs\.?|inr|₹)\s*(\d[\d,]*(?:\.\d+)?)"
+    r"(?:\s*(crores?|cr|lakhs?|lacs?|millions?|mn)\b)?",
+    re.IGNORECASE,
+)
+
+
+def parse_value(text: str | None) -> tuple[str | None, float | None]:
+    """Pull an order value out of the summary text, if it states one.
+
+    Returns (raw_text, value_in_crore). First rupee amount wins (the headline
+    usually leads with it). Returns (None, None) when no amount is stated — those
+    get filled from the PDF later (Steps 4-5).
+    """
+    if not text:
+        return None, None
+    m = _VALUE_RE.search(text)
+    if not m:
+        return None, None
+    num = float(m.group(1).replace(",", ""))
+    unit = (m.group(2) or "").lower()
+    if unit.startswith("cr"):
+        crore = num
+    elif unit.startswith(("lakh", "lac")):
+        crore = num / 100
+    elif unit.startswith(("million", "mn")):
+        crore = num * 0.1
+    else:  # plain rupees
+        crore = num / 1e7
+    return m.group(0).strip(), round(crore, 4)
+
+
 def parse_announcement(ann: dict[str, Any]) -> dict[str, Any]:
-    """Map one BSE announcement row into `orders` columns (5 extracted fields NULL)."""
+    """Map one BSE announcement row into `orders` columns.
+
+    Uses the rich HEADLINE / MORE body text (what the BSE page shows) — not the
+    boilerplate NEWSSUB title — and extracts the order value from it when stated.
+    The remaining extracted fields (awarder, duration, industry) stay NULL for
+    Steps 4-5.
+    """
     scrip_code = _scrip_to_str(ann.get("SCRIP_CD"))
-    headline = (str(ann.get("NEWSSUB") or ann.get("HEADLINE") or "")).strip() or None
+    summary = str(ann.get("HEADLINE") or "").strip()   # rich one-line body
+    more = str(ann.get("MORE") or "").strip()           # expanded "Read more" body
+    title = str(ann.get("NEWSSUB") or "").strip()       # boilerplate title
+    headline = summary or title or None
+    description = more or summary or title or None
     subcat = (str(ann.get("SUBCATNAME") or "")).strip() or None
     company = (str(ann.get("SLONGNAME") or "")).strip()
     if not company:
@@ -167,27 +214,29 @@ def parse_announcement(ann: dict[str, Any]) -> dict[str, Any]:
     filed_at = to_iso8601(
         ann.get("NEWS_DT") or ann.get("DissemDT") or ann.get("News_submission_dt")
     )
+    value_text, value_crore = parse_value(f"{summary} {more}")
     return {
         # identity
         "company_name": company,
         "bse_scrip_code": scrip_code,
         "nse_symbol": None,
         "isin": None,
-        # 5 extracted fields — filled by Steps 4-5 (description temporarily = headline)
-        "order_value_text": None,
-        "order_value_crore": None,
+        # value: from the summary when stated; else NULL -> filled from PDF (Steps 4-5)
+        "order_value_text": value_text,
+        "order_value_crore": value_crore,
+        # still filled by Steps 4-5
         "awarder": None,
         "duration_text": None,
         "duration_months": None,
         "target_industry": None,
-        "description": headline,
+        "description": description,
         # evidence / provenance
         "exchange": "BSE",
         "category": subcat,
         "headline": headline,
         "attachment_url": build_attachment_url(ann.get("ATTACHMENTNAME")),
         "source_label": "BSE Filing",
-        "raw_text": None,
+        "raw_text": more or summary or None,
         "extraction_confidence": None,
         "extraction_model": None,
         # identity / dedup
@@ -199,16 +248,15 @@ def parse_announcement(ann: dict[str, Any]) -> dict[str, Any]:
 # --- fetching ----------------------------------------------------------------
 
 def build_ann_url(page: int, day: datetime.date) -> str:
-    """Build the announcements URL for one page of a SINGLE day.
-
-    Params match BSE's own SPA: strCat=-1 (all categories), strSearch=P,
-    strType=C, subcategory=-1 (all subcategories), same prev/to date.
-    """
+    """Build the announcements URL for one page of a SINGLE day, filtered to the
+    order subcategory so BSE returns ONLY order wins (clean, no keyword noise)."""
     ymd = day.strftime("%Y%m%d")
     return (
-        f"{BSE_ANN_API}?pageno={page}&strCat=-1"
+        f"{BSE_ANN_API}?pageno={page}"
+        f"&strCat={quote(ORDER_CATEGORY)}"
         f"&strPrevDate={ymd}&strScrip=&strSearch=P"
-        f"&strToDate={ymd}&strType=C&subcategory=-1"
+        f"&strToDate={ymd}&strType=C"
+        f"&subcategory={quote(ORDER_SUBCATEGORY)}"
     )
 
 
