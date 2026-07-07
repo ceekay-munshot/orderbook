@@ -1,0 +1,40 @@
+{
+  // ---------------------------------------------------------------------------
+  // ROOT wrangler config — used ONLY by Cloudflare Workers Builds, which runs
+  // `npx wrangler deploy` from the repo root. It builds the Next.js app in
+  // web/ via the OpenNext adapter, then deploys the generated Worker.
+  //
+  // For LOCAL development use web/wrangler.jsonc instead (npm run dev / preview,
+  // D1 migrations, seeding). Keep the two configs in sync.
+  // ---------------------------------------------------------------------------
+  "name": "orderbook",
+  "main": "web/.open-next/worker.js",
+  "compatibility_date": "2025-03-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // Build the OpenNext output before deploying. Runs in web/ so it installs the
+  // app's dependencies and reads web/wrangler.jsonc.
+  "build": {
+    "cwd": "web",
+    "command": "npm ci && ./node_modules/.bin/opennextjs-cloudflare build"
+  },
+
+  "assets": {
+    "binding": "ASSETS",
+    "directory": "web/.open-next/assets"
+  },
+
+  "observability": {
+    "enabled": true
+  }
+
+  // NOTE: the D1 `DB` binding is intentionally OMITTED here until the REMOTE D1
+  // database is provisioned. Deploying a binding to a non-existent database
+  // would fail the deploy; without the binding, getOrders() falls back to demo
+  // data and the dashboard renders. Once you create the remote D1
+  // (`wrangler d1 create orderbook`), add it back here with the real id:
+  //
+  //   "d1_databases": [
+  //     { "binding": "DB", "database_name": "orderbook", "database_id": "<real-id>" }
+  //   ]
+}

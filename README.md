@@ -127,34 +127,39 @@ npm run deploy       # Build with OpenNext and deploy to Cloudflare Workers
 npm run cf-typegen   # Generate cloudflare-env.d.ts from wrangler.jsonc bindings
 ```
 
-### Deploying to Cloudflare (Workers Builds)
+### Deploying to Cloudflare
 
-The app lives in `web/` (a monorepo subdirectory) and deploys via the **OpenNext**
-adapter — it is **not** a plain static/Worker deploy. The connected Worker must
-be configured so its build runs OpenNext from `web/`. In the Cloudflare
-dashboard → your Worker → **Settings → Build**:
+Pushing to `main` triggers the connected Worker (Workers Builds), which runs
+`npx wrangler deploy` from the repo root. The root **`wrangler.jsonc`** makes
+that work with **no dashboard build settings**: its `build` command builds the
+Next.js app in `web/` via OpenNext, then wrangler deploys the generated Worker.
 
-| Setting              | Value                              |
-| -------------------- | ---------------------------------- |
-| Root directory       | `web`                              |
-| Build command        | `npx opennextjs-cloudflare build`  |
-| Deploy command       | `npx opennextjs-cloudflare deploy` |
+There are two wrangler configs — keep them in sync:
 
-> The default `npx wrangler deploy` (run at the repo root) **fails** — there is
-> no `wrangler.jsonc` at the root and no OpenNext build has run, so wrangler
-> reports _"Could not detect a directory containing static files"_. The Worker
-> `name` in `web/wrangler.jsonc` must also match the connected Worker (`orderbook`).
+- **`wrangler.jsonc`** (root) — used **only** by the automated deploy.
+- **`web/wrangler.jsonc`** — used for local dev (`npm run dev` / `preview`, D1
+  migrations, seeding); carries the local D1 `DB` binding.
 
-**Before the first real deploy — provision the remote D1** (until then the deploy
-fails on the `DB` binding because `database_id` is a placeholder):
+**Production D1:** the root config intentionally **omits** the `DB` binding until
+the remote database exists (deploying a binding to a missing DB fails the
+deploy). Until then the live dashboard renders demo/mock data — `getOrders()`
+falls back when the binding is absent. To go live with real data:
 
 ```bash
 cd web
-npx wrangler d1 create orderbook          # paste the returned id into wrangler.jsonc
-npm run db:migrate:remote                  # apply the schema to the remote D1
+npx wrangler d1 create orderbook          # copy the returned database_id
+npm run db:migrate:remote                 # apply the schema to remote D1
 ```
 
-Also set the same id as the `CF_D1_DATABASE_ID` GitHub secret (used by ingestion).
+Then add the binding to the **root** `wrangler.jsonc`, put the real id in
+`web/wrangler.jsonc`, and set the `CF_D1_DATABASE_ID` GitHub secret (used by
+ingestion):
+
+```jsonc
+"d1_databases": [
+  { "binding": "DB", "database_name": "orderbook", "database_id": "<real-id>" }
+]
+```
 
 ## Run `/ingestion` locally
 
