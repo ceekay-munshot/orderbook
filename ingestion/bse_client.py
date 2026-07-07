@@ -215,6 +215,25 @@ _RUPEE_FIGURE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# An amount in Indian digit grouping (x,xx,...,xxx — at least one lakh group),
+# e.g. "9,30,00,000.00". That grouping is unmistakably a formatted rupee figure
+# (Western thousands grouping is groups of 3), so we read it as rupees. Used only
+# as a last resort, after the foreign-currency guard.
+_INDIAN_NUMBER_RE = re.compile(r"(\d{1,2}(?:,\d{2}){1,},\d{3}(?:\.\d+)?)")
+
+# Precise currency detection (word-boundaried, so "eur" doesn't match "Europe"
+# nor "rs" match "years"). If a phrase names a foreign currency and no rupee
+# marker, we keep it as text rather than mis-convert it as rupees.
+_FOREIGN_CCY_RE = re.compile(
+    r"[$€£¥]|\b(?:usd|eur|gbp|jpy|cny|rmb|aed|sgd|myr|sar|qar|kwd|omr|zar|aud|cad|"
+    r"chf|dollars?|euros?|dirhams?|ringgit|yen)\b",
+    re.IGNORECASE,
+)
+_INR_MARKER_RE = re.compile(
+    r"₹|\brs\.?|\b(?:inr|rupees?|crores?|lakhs?|lacs?|cr)\b",
+    re.IGNORECASE,
+)
+
 
 def value_phrase_to_crore(phrase: str | None) -> tuple[str | None, float | None]:
     """Normalize an order-value phrase (from the LLM) into crore.
@@ -237,10 +256,9 @@ def value_phrase_to_crore(phrase: str | None) -> tuple[str | None, float | None]
     # it as if it were rupees (that would be an ~80x error). Keep the phrase as
     # text, leave the number blank. crore/lakh are inherently INR, so their
     # presence means the amount is in rupees even if a stray "$" appears.
-    low = s.casefold()
-    inr_marker = any(t in low for t in ("₹", "rs", "inr", "rupee", "crore", " cr", "lakh", "lac"))
-    foreign_marker = any(t in low for t in ("$", "usd", "eur", "€", "gbp", "£", "aed", "sgd"))
-    if foreign_marker and not inr_marker:
+    # Foreign currency named with no rupee marker -> keep as text, don't convert
+    # it as if it were rupees (that would be an ~80x error).
+    if _FOREIGN_CCY_RE.search(s) and not _INR_MARKER_RE.search(s):
         return None, None
     # explicit unit without a prefix: "10.85 Crore", "50 million"
     m = _VALUE_UNIT_RE.search(s)
@@ -264,15 +282,21 @@ def value_phrase_to_crore(phrase: str | None) -> tuple[str | None, float | None]
     if m2:
         num = float(m2.group(1).replace(",", ""))
         return m2.group(0).strip(), round(num / 1e7, 4)
+    # last resort: an Indian-grouped figure ("9,30,00,000.00") reads as rupees
+    m3 = _INDIAN_NUMBER_RE.search(s)
+    if m3:
+        num = float(m3.group(1).replace(",", ""))
+        return m3.group(1), round(num / 1e7, 4)
     return None, None
 
 
 # A duration phrase: number + time unit ("24 months", "2 years", "18-month",
 # "2.5 year period"). Years convert ×12.
-# The optional (?:\([^)]*\)\s*)? swallows a spelled-out parenthetical between the
-# number and the unit, e.g. "9(Nine) months" or "12 (Twelve) months".
+# The number may itself be wrapped in parens ("(10) Months", "Five(05)Years"),
+# and an optional (?:\([^)]*\)\s*)? swallows a spelled-out parenthetical between
+# the number and the unit ("9(Nine) months", "12 (Twelve) months").
 _DURATION_RE = re.compile(
-    r"(\d+(?:\.\d+)?)\s*(?:\([^)]*\)\s*)?[-\s]?\s*"
+    r"\(?(\d+(?:\.\d+)?)\)?\s*(?:\([^)]*\)\s*)?[-\s]?\s*"
     r"(years?|yrs?|months?|mons?|mos?|weeks?|days?)\b",
     re.IGNORECASE,
 )
