@@ -56,16 +56,18 @@ orderbook/
 │   ├── tsconfig.json
 │   └── package.json
 ├── ingestion/                # Python pipeline (runs on GitHub Actions)
-│   ├── main.py               # Entrypoint — prints a readiness check, exits 0
+│   ├── main.py               # Entrypoint — Phase 1 fetch+write, Phase 2 PDF-enrich
 │   ├── config.py             # Loads env vars / GitHub Secrets (never logs values)
 │   ├── d1_client.py          # Runs SQL against Cloudflare D1 via its HTTP API
-│   ├── firecrawl_client.py   # STUB: fetch + parse pages/PDFs (TODO)
-│   ├── scrapedo_client.py    # STUB: proxied fetch for BSE (TODO)
-│   ├── openai_client.py      # STUB: field extraction (TODO)
+│   ├── bse_client.py         # Reads BSE order announcements + value/duration parse
+│   ├── firecrawl_client.py   # Fetches + parses BSE pages / order PDFs
+│   ├── scrapedo_client.py    # STUB: proxied fetch for BSE (fallback, TODO)
+│   ├── openai_client.py      # Extracts value/duration/awarder from PDF text
 │   └── requirements.txt
 ├── db/
 │   ├── migrations/
-│   │   └── 0001_init.sql     # PLACEHOLDER — real schema lands in Step 2
+│   │   ├── 0001_init.sql     # orders + industry_map schema
+│   │   └── 0002_pdf_checked.sql  # pdf_checked flag for the enrichment pass
 │   └── README.md
 ├── .github/workflows/
 │   └── ingest.yml            # Manual (workflow_dispatch) run of the pipeline
@@ -179,10 +181,20 @@ this stage.
 
 ## What's stubbed for later
 
-- **Ingestion clients** — `firecrawl_client.py`, `scrapedo_client.py`,
-  `openai_client.py` are stubs with `TODO`s and `NotImplementedError`.
-- **DB schema** — `db/migrations/0001_init.sql` is a placeholder `orders` table.
-  The real schema is Step 2.
+- **Scrape.do client** — `scrapedo_client.py` is a fallback fetcher; the direct
+  BSE fetch is primary, so it's rarely exercised.
+- **Industry mapping** — `target_industry` is left NULL by ingestion; a later
+  Stock-Scan step maps each company to its industry.
 - **Scheduling** — `ingest.yml` runs manually; the `schedule:` block is
   commented out for later.
-- **Dashboard** — static mock data, no filters/search/history yet.
+- **Dashboard** — filters/search/history still to come.
+
+## PDF enrichment (Phase 2)
+
+After writing new BSE orders, `main.py` runs a second pass over orders **already
+in D1** that are still missing a value or a duration (and haven't been PDF-checked
+yet). For each one it downloads the filing's PDF via Firecrawl (which parses it
+to text server-side, `AttachLive` with an `AttachHis` fallback), asks OpenAI to
+pull *only* the missing fields as verbatim phrases, normalizes them to
+crore/months in code, stores the PDF text as evidence, and marks `pdf_checked`
+so repeat runs don't re-download it. `INGEST_LIMIT` caps how many PDFs per run.

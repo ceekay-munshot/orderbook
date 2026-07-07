@@ -165,6 +165,75 @@ class FirecrawlClient:
             f"Firecrawl request failed after {retries + 1} attempt(s): {last_err}"
         )
 
+    def scrape_pdf(
+        self,
+        url: str,
+        *,
+        retries: int = 2,
+        backoff: float = 2.0,
+        timeout: float | None = None,
+    ) -> str:
+        """Download a PDF via Firecrawl and return its extracted text.
+
+        Firecrawl fetches the PDF and parses it server-side, so we get plain
+        text (markdown) without touching the binary ourselves. Used by the
+        PDF-enrichment step to read BSE order attachments.
+
+        Returns the parsed text, or ``""`` when the PDF has no extractable text
+        (e.g. a scanned / image-only document). Retries transient errors
+        (429/5xx, network); raises :class:`FirecrawlError` on a non-retryable
+        HTTP error (auth, 404) or after exhausting retries.
+        """
+        if not self._api_key:
+            raise FirecrawlError("no Firecrawl API key configured")
+
+        client_timeout = float(timeout or self._timeout)
+        payload: dict[str, object] = {
+            "url": url,
+            # PDFs are auto-detected and parsed by Firecrawl; markdown holds the
+            # extracted text. onlyMainContent off so we keep the whole document.
+            "formats": ["markdown"],
+            "onlyMainContent": False,
+            "timeout": int(max(client_timeout - 15.0, 30.0) * 1000),
+        }
+        auth_headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+
+        last_err: Exception | None = None
+        for attempt in range(retries + 1):
+            try:
+                resp = self._session.post(
+                    FIRECRAWL_SCRAPE_URL,
+                    json=payload,
+                    headers=auth_headers,
+                    timeout=client_timeout,
+                )
+            except requests.RequestException as exc:
+                last_err = exc
+            else:
+                if resp.status_code == 200:
+                    body = resp.json()
+                    if not body.get("success", False):
+                        raise FirecrawlError(f"Firecrawl error: {str(body)[:200]}")
+                    data = body.get("data") or {}
+                    for key in ("markdown", "content", "rawHtml", "html"):
+                        value = data.get(key)
+                        if value and str(value).strip():
+                            return value
+                    return ""  # parsed OK but no extractable text (scanned PDF)
+                last_err = FirecrawlError(
+                    f"HTTP {resp.status_code}: {resp.text[:200]}"
+                )
+                if resp.status_code not in (429, 500, 502, 503, 504):
+                    raise last_err
+            if attempt < retries:
+                time.sleep(backoff * (attempt + 1))
+        raise FirecrawlError(
+            f"Firecrawl PDF request failed after {retries + 1} attempt(s): {last_err}"
+        )
+
     def fetch_json_via_browser(
         self,
         base_url: str,

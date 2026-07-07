@@ -53,6 +53,24 @@ ORDER_COLUMNS: tuple[str, ...] = (
     "filed_at",
 )
 
+# Columns the PDF-enrichment step is allowed to UPDATE in place. An allowlist so
+# a typo in a field name fails loudly instead of building malformed SQL.
+UPDATABLE_COLUMNS: frozenset[str] = frozenset(
+    {
+        "order_value_text",
+        "order_value_crore",
+        "awarder",
+        "duration_text",
+        "duration_months",
+        "target_industry",
+        "description",
+        "raw_text",
+        "extraction_confidence",
+        "extraction_model",
+        "pdf_checked",
+    }
+)
+
 
 def compute_dedup_key(order: dict[str, Any]) -> str:
     """Return a stable dedup key so we never double-insert the same filing.
@@ -189,6 +207,49 @@ class D1Client:
             f"INSERT INTO orders ({columns}) VALUES ({placeholders}) "
             f"ON CONFLICT(dedup_key) DO UPDATE SET {updates}, "
             f"updated_at = datetime('now')"
+        )
+        return self.query(sql, params)
+
+    def orders_needing_pdf(self, limit: int) -> list[dict[str, Any]]:
+        """Return orders that still need PDF enrichment.
+
+        A row qualifies when it is missing a value OR a duration (in the
+        normalized crore/months columns) AND has not been PDF-checked yet. Newest
+        first, capped at ``limit`` (the per-run cost guard). Rows that already
+        have both value and duration are never returned — their PDF is skipped.
+        """
+        sql = (
+            "SELECT id, dedup_key, company_name, attachment_url, headline, "
+            "description, order_value_text, order_value_crore, duration_text, "
+            "duration_months, awarder, raw_text "
+            "FROM orders "
+            "WHERE (order_value_crore IS NULL OR duration_months IS NULL) "
+            "AND (pdf_checked IS NULL OR pdf_checked = 0) "
+            "ORDER BY filed_at DESC LIMIT ?"
+        )
+        return self.query(sql, [int(limit)])
+
+    def update_order(
+        self, row_id: Any, fields: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        """Update specific columns of one order row (by id) and bump updated_at.
+
+        Only the columns present in ``fields`` are written; the rest are left as
+        they are. Every key must be in :data:`UPDATABLE_COLUMNS`. Used by the
+        PDF-enrichment step to fill blanks and mark ``pdf_checked``.
+        """
+        if not fields:
+            return []
+        bad = [k for k in fields if k not in UPDATABLE_COLUMNS]
+        if bad:
+            raise D1Error(f"update_order: columns not updatable: {bad}")
+        columns = list(fields.keys())
+        assignments = ", ".join(f"{col} = ?" for col in columns)
+        params: list[Any] = [fields[col] for col in columns]
+        params.append(row_id)
+        sql = (
+            f"UPDATE orders SET {assignments}, updated_at = datetime('now') "
+            f"WHERE id = ?"
         )
         return self.query(sql, params)
 

@@ -10,6 +10,11 @@ on:
         required: false
         default: "2"
         type: string
+      pdf_limit:
+        description: "Max PDFs to read for enrichment this run (INGEST_LIMIT — cost cap)"
+        required: false
+        default: "5"
+        type: string
   # schedule:
   #   # Every 6 hours (UTC). Enable once real ingestion is in place.
   #   - cron: "0 */6 * * *"
@@ -39,6 +44,8 @@ jobs:
         env:
           # Fetch window (from the "days" input; defaults to 2)
           INGEST_DAYS: ${{ inputs.days }}
+          # PDF-enrichment cap per run (from the "pdf_limit" input; defaults to 5)
+          INGEST_LIMIT: ${{ inputs.pdf_limit }}
           # Proxy + APIs
           SCRAPEDO_API_KEY: ${{ secrets.SCRAPEDO_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}

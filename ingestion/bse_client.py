@@ -192,6 +192,124 @@ def parse_value(text: str | None) -> tuple[str | None, float | None]:
     return m.group(0).strip(), round(crore, 4)
 
 
+# --- normalizers for LLM-extracted phrases -----------------------------------
+# The PDF-enrichment step (Step 3) asks OpenAI for the *verbatim* phrase stating
+# a value/duration; these turn that phrase into a number IN CODE, so we only ever
+# store a number that literally appears in the text (never one the model made up).
+
+# A value phrase with an EXPLICIT unit, rupee prefix optional: "10.85 Crore",
+# "Rs 47.38 Lakhs", "₹100 cr", "USD... " is ignored (no supported unit). We
+# require the unit word — a bare number has no known scale and we never guess.
+_VALUE_UNIT_RE = re.compile(
+    r"(?:rs\.?|inr|₹)?\s*(\d[\d,]*(?:\.\d+)?)\s*"
+    r"(crores?|cr|lakhs?|lacs?|millions?|mn|billions?|bn)\b",
+    re.IGNORECASE,
+)
+
+
+def value_phrase_to_crore(phrase: str | None) -> tuple[str | None, float | None]:
+    """Normalize an order-value phrase (from the LLM) into crore.
+
+    Tries the strict summary parser first (rupee-prefixed; also handles plain
+    rupee amounts like "Rs. 36,95,760"), then a lenient match that accepts a
+    number + an explicit unit without the prefix ("10.85 Crore"). Returns
+    (matched_text, value_in_crore), or (None, None) when the phrase states no
+    amount with a known unit — we never guess the scale of a bare number.
+    """
+    if not phrase:
+        return None, None
+    s = str(phrase).strip()
+    if not s or s.casefold() == "not specified":
+        return None, None
+    text, crore = parse_value(s)  # strict: needs Rs/INR/₹ prefix
+    if crore is not None:
+        return text, crore
+    # Guard: a foreign currency with no rupee/crore/lakh marker — don't convert
+    # it as if it were rupees (that would be an ~80x error). Keep the phrase as
+    # text, leave the number blank. crore/lakh are inherently INR, so their
+    # presence means the amount is in rupees even if a stray "$" appears.
+    low = s.casefold()
+    inr_marker = any(t in low for t in ("₹", "rs", "inr", "crore", " cr", "lakh", "lac"))
+    foreign_marker = any(t in low for t in ("$", "usd", "eur", "€", "gbp", "£", "aed", "sgd"))
+    if foreign_marker and not inr_marker:
+        return None, None
+    m = _VALUE_UNIT_RE.search(s)
+    if not m:
+        return None, None
+    num = float(m.group(1).replace(",", ""))
+    unit = m.group(2).lower()
+    if unit.startswith(("crore", "cr")):
+        crore = num
+    elif unit.startswith(("lakh", "lac")):
+        crore = num / 100
+    elif unit.startswith(("million", "mn")):
+        crore = num * 0.1
+    elif unit.startswith(("billion", "bn")):
+        crore = num * 100
+    else:
+        return None, None
+    return m.group(0).strip(), round(crore, 4)
+
+
+# A duration phrase: number + time unit ("24 months", "2 years", "18-month",
+# "2.5 year period"). Years convert ×12.
+_DURATION_RE = re.compile(
+    r"(\d+(?:\.\d+)?)\s*[-\s]?\s*(years?|yrs?|months?|mons?|mos?|weeks?|days?)\b",
+    re.IGNORECASE,
+)
+_WORD_NUMBERS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+    "seven": 7, "eight": 8, "nine": 9, "ten": 10, "twelve": 12,
+}
+
+
+def duration_to_months(phrase: str | None) -> tuple[str | None, int | None]:
+    """Normalize a duration phrase (from the LLM) into whole months.
+
+    Handles "24 months", "2 years", "2.5 year", "18-month period" and a few
+    spelled-out numbers ("two years"). Weeks/days are converted approximately.
+    Returns (matched_text, months), or (None, None) when no duration is stated.
+    A stated non-zero duration is floored at 1 month so it never rounds to 0.
+    """
+    if not phrase:
+        return None, None
+    s = str(phrase).strip()
+    if not s or s.casefold() == "not specified":
+        return None, None
+
+    m = _DURATION_RE.search(s)
+    if m:
+        num = float(m.group(1))
+        unit = m.group(2).lower()
+        matched = m.group(0).strip()
+    else:
+        wm = re.search(
+            r"\b(" + "|".join(_WORD_NUMBERS) + r")[-\s]+(years?|months?)\b",
+            s,
+            re.IGNORECASE,
+        )
+        if not wm:
+            return None, None
+        num = float(_WORD_NUMBERS[wm.group(1).lower()])
+        unit = wm.group(2).lower()
+        matched = wm.group(0).strip()
+
+    if unit.startswith(("year", "yr")):
+        months = num * 12
+    elif unit.startswith(("month", "mon", "mo")):
+        months = num
+    elif unit.startswith("week"):
+        months = num / 4.345
+    elif unit.startswith("day"):
+        months = num / 30.0
+    else:
+        return None, None
+    months_int = int(round(months))
+    if months_int <= 0:
+        months_int = 1
+    return matched, months_int
+
+
 def parse_announcement(ann: dict[str, Any]) -> dict[str, Any]:
     """Map one BSE announcement row into `orders` columns.
 
