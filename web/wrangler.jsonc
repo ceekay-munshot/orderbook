@@ -26,7 +26,7 @@
     {
       "binding": "DB",
       "database_name": "orderbook",
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "c37ebe54-c60c-492d-bd42-db65c4ae435c",
       "migrations_dir": "../db/migrations"
     }
   ]

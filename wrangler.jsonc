@@ -26,15 +26,14 @@
 
   "observability": {
     "enabled": true
-  }
+  },
 
-  // NOTE: the D1 `DB` binding is intentionally OMITTED here until the REMOTE D1
-  // database is provisioned. Deploying a binding to a non-existent database
-  // would fail the deploy; without the binding, getOrders() falls back to demo
-  // data and the dashboard renders. Once you create the remote D1
-  // (`wrangler d1 create orderbook`), add it back here with the real id:
-  //
-  //   "d1_databases": [
-  //     { "binding": "DB", "database_name": "orderbook", "database_id": "<real-id>" }
-  //   ]
+  // The deployed dashboard reads the order book through this binding (env.DB).
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "orderbook",
+      "database_id": "c37ebe54-c60c-492d-bd42-db65c4ae435c"
+    }
+  ]
 }

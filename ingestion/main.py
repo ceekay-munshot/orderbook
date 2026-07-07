@@ -55,6 +55,32 @@ def db_configured(config: Config) -> bool:
     )
 
 
+def ensure_schema(client: D1Client) -> None:
+    """Create the tables if they don't exist (idempotent), so the workflow sets
+    up the database itself — no manual migration needed."""
+    path = os.path.join(
+        os.path.dirname(__file__), "..", "db", "migrations", "0001_init.sql"
+    )
+    try:
+        with open(path, encoding="utf-8") as fh:
+            raw = fh.read()
+    except OSError as exc:
+        print(f"  schema: could not read migration ({exc}); assuming tables exist")
+        return
+    body = "\n".join(
+        ln for ln in raw.splitlines() if not ln.lstrip().startswith("--")
+    )
+    statements = [s.strip() for s in body.split(";") if s.strip()]
+    ok = 0
+    for stmt in statements:
+        try:
+            client.query(stmt)
+            ok += 1
+        except Exception as exc:  # noqa: BLE001
+            print(f"  schema stmt skipped ({exc})")
+    print(f"  schema: ensured {ok}/{len(statements)} statements")
+
+
 def _fmt(order: dict, rule: str, detail: str | None) -> str:
     val = order.get("order_value_text") or "value→PDF"
     headline = (order.get("headline") or "")[:64]
@@ -122,6 +148,7 @@ def main() -> int:
     client: D1Client | None = None
     if writing:
         client = D1Client.from_config(config)
+        ensure_schema(client)  # create tables on first run (idempotent)
         try:
             existing = client.existing_dedup_keys([o["dedup_key"] for o, _, _ in deduped])
         except Exception as exc:  # noqa: BLE001
