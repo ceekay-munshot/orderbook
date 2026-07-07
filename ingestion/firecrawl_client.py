@@ -188,10 +188,13 @@ class FirecrawlClient:
         # Firecrawl evaluates the script as a bare expression (page.evaluate), so
         # NO `return` and NO top-level `await` are allowed. Provide an expression
         # that evaluates to a promise; Playwright auto-awaits the returned promise.
+        # NOTE: no `credentials: 'include'` — BSE's API sends Access-Control-Allow-
+        # Origin: * and the browser blocks wildcard-CORS + credentials ("Failed to
+        # fetch"). Default same-origin credentials work for this cross-origin call.
         script = (
             "fetch(" + json.dumps(target_url)
-            + ", {headers: {'Accept': 'application/json, text/plain, */*'}, "
-            "credentials: 'include'}).then(r => r.text())"
+            + ", {headers: {'Accept': 'application/json, text/plain, */*'}})"
+            ".then(r => r.text())"
         )
         payload: dict[str, object] = {
             "url": base_url,
