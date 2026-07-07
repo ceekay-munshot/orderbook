@@ -34,7 +34,11 @@ from scrapedo_client import ScrapedoClient
 # A fetcher fetches a URL and returns the raw response body text.
 Fetcher = tuple[str, Callable[[str], str]]
 
-BSE_ANN_API = "https://api.bseindia.com/BseIndiaAPI/api/AnnGetData/w"
+# Announcements JSON API. NOTE: it is AnnSubCategoryGetData/w — NOT AnnGetData/w
+# (which returns "No Record Found!") — it needs a `subcategory` param, and the
+# date range must be a SINGLE day (wider ranges return {} or a "Date range
+# exceeded threshold" error), so we query day by day.
+BSE_ANN_API = "https://api.bseindia.com/BseIndiaAPI/api/AnnSubCategoryGetData/w"
 # The announcements page — loaded first so Firecrawl can call the API from its
 # JS context (correct Origin/Referer/cookies).
 BSE_SITE = "https://www.bseindia.com/corporates/ann.html"
@@ -194,13 +198,17 @@ def parse_announcement(ann: dict[str, Any]) -> dict[str, Any]:
 
 # --- fetching ----------------------------------------------------------------
 
-def build_ann_url(page: int, from_date: datetime.date, to_date: datetime.date) -> str:
-    """Build the BSE AnnGetData URL for one page of a date range."""
+def build_ann_url(page: int, day: datetime.date) -> str:
+    """Build the announcements URL for one page of a SINGLE day.
+
+    Params match BSE's own SPA: strCat=-1 (all categories), strSearch=P,
+    strType=C, subcategory=-1 (all subcategories), same prev/to date.
+    """
+    ymd = day.strftime("%Y%m%d")
     return (
         f"{BSE_ANN_API}?pageno={page}&strCat=-1"
-        f"&strPrevDate={from_date.strftime('%Y%m%d')}"
-        f"&strToDate={to_date.strftime('%Y%m%d')}"
-        "&strScrip=&strSearch=P&strType=C"
+        f"&strPrevDate={ymd}&strScrip=&strSearch=P"
+        f"&strToDate={ymd}&strType=C&subcategory=-1"
     )
 
 
@@ -241,13 +249,19 @@ def parse_table(text: str) -> list[dict[str, Any]]:
 
 
 def build_fetchers(config: Config, *, timeout: float = 30.0) -> list[Fetcher]:
-    """Build the ordered fetcher chain from available API keys.
+    """Build the ordered fetcher chain.
 
-    Order: Scrape.do (residential) -> Firecrawl -> direct. BSE blocks datacenter
-    IPs, so Scrape.do uses `super=true` (residential) + geoCode=in, and Firecrawl
-    uses proxy=auto (escalates to stealth). Direct is a keyless last resort.
+    Order: direct -> Scrape.do -> Firecrawl. BSE's announcements API serves
+    datacenter IPs fine (the earlier blocks were a wrong endpoint), so a plain
+    direct request is primary + free; the proxies are paid fallbacks in case a CI
+    runner's IP is ever rate-limited (Scrape.do residential, Firecrawl in-page).
     """
-    fetchers: list[Fetcher] = []
+    _session = requests.Session()
+
+    def _via_direct(url: str) -> str:
+        return _session.get(url, headers=BROWSER_HEADERS, timeout=timeout).text
+
+    fetchers: list[Fetcher] = [("direct", _via_direct)]
 
     if config.scrapedo_api_key:
         scrapedo = ScrapedoClient.from_config(config)
@@ -264,18 +278,11 @@ def build_fetchers(config: Config, *, timeout: float = 30.0) -> list[Fetcher]:
 
         def _via_firecrawl(url: str) -> str:
             # Load BSE's page, then call the API from inside its JS context (like
-            # the SPA) — correct Origin/Referer/cookies, avoids the 400 that
-            # forwarding browser-forbidden headers causes.
+            # the SPA) — correct Origin/Referer/cookies.
             return firecrawl.fetch_json_via_browser(BSE_SITE, url)
 
         fetchers.append(("firecrawl", _via_firecrawl))
 
-    _session = requests.Session()
-
-    def _via_direct(url: str) -> str:
-        return _session.get(url, headers=BROWSER_HEADERS, timeout=timeout).text
-
-    fetchers.append(("direct", _via_direct))
     return fetchers
 
 
@@ -316,34 +323,57 @@ class BSEReader:
     def fetch_range(
         self, from_date: datetime.date, to_date: datetime.date
     ) -> list[dict[str, Any]]:
-        """Fetch all announcement rows for [from_date, to_date], paging until done."""
-        probe = self._probe(build_ann_url(1, from_date, to_date))
+        """Fetch all announcement rows for [from_date, to_date], ONE DAY AT A TIME
+        (BSE only accepts single-day queries), paging within each day. `max_pages`
+        is a global cap on page fetches to bound run time."""
+        days = [
+            to_date - datetime.timedelta(days=n)
+            for n in range((to_date - from_date).days + 1)
+        ]  # newest first
+        probe = self._probe(build_ann_url(1, days[0]))
         if probe is None:
             return []
-        name, fetch, first_rows = probe
+        name, fetch, first_page = probe
         self.source = name
 
-        rows: list[dict[str, Any]] = list(first_rows)
-        seen_ids = {str(r.get("NEWSID")) for r in first_rows}
-        total_pages = first_rows[0].get("TotalPageCnt")
+        rows: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        remaining = self._max_pages
 
-        page = 2
-        while page <= self._max_pages and not (total_pages and page > int(total_pages)):
-            time.sleep(self._page_delay)
-            try:
-                text = fetch(build_ann_url(page, from_date, to_date))
-            except Exception as exc:  # noqa: BLE001
-                print(f"  [{name}] page {page} error: {exc}")
-                break
-            fresh = [r for r in parse_table(text) if str(r.get("NEWSID")) not in seen_ids]
-            if not fresh:
-                break
+        def ingest(page_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            fresh = [r for r in page_rows if str(r.get("NEWSID")) not in seen]
             for r in fresh:
-                seen_ids.add(str(r.get("NEWSID")))
+                seen.add(str(r.get("NEWSID")))
             rows.extend(fresh)
-            page += 1
+            return fresh
 
-        print(f"  -> fetched {len(rows)} rows via {name}")
+        for idx, day in enumerate(days):
+            page = 1
+            page_rows: list[dict[str, Any]] | None = first_page if idx == 0 else None
+            while remaining > 0:
+                if page_rows is None:
+                    if page > 1:
+                        time.sleep(self._page_delay)
+                    try:
+                        page_rows = parse_table(fetch(build_ann_url(page, day)))
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"  [{name}] {day} page {page} error: {exc}")
+                        break
+                remaining -= 1
+                if not page_rows:
+                    break
+                fresh = ingest(page_rows)
+                total = page_rows[0].get("TotalPageCnt")
+                if not fresh or (total and page >= int(total)):
+                    break
+                page += 1
+                page_rows = None
+            if remaining <= 0:
+                print(f"  [reader] hit max_pages cap ({self._max_pages}); raise "
+                      "INGEST_MAX_PAGES for more history")
+                break
+
+        print(f"  -> fetched {len(rows)} rows via {name} across {len(days)} day(s)")
         return rows
 
 

@@ -75,12 +75,11 @@ def main() -> int:
     # --- fetch ---------------------------------------------------------------
     fetchers = build_fetchers(config)
     print(f"fetch chain: {', '.join(name for name, _ in fetchers)}")
-    print("(BSE blocks datacenter IPs; Scrape.do uses residential 'super', "
-          "Firecrawl uses stealth proxies)\n")
+    print("(direct is primary + free; Scrape.do / Firecrawl are fallbacks)\n")
 
-    # Firecrawl stealth solves BSE's bot check per page (~1-2 min each), so cap
-    # pages to bound run time/credits. Raise INGEST_MAX_PAGES once it's writing.
-    max_pages = _int_env("INGEST_MAX_PAGES", 10)
+    # Global cap on page fetches — each day is ~20+ pages of ~50 announcements.
+    # Direct fetch is fast/free; raise INGEST_MAX_PAGES for a bigger backfill.
+    max_pages = _int_env("INGEST_MAX_PAGES", 60)
     reader = BSEReader(fetchers, max_pages=max_pages)
     try:
         announcements = reader.fetch_range(from_date, to_date)
@@ -90,11 +89,9 @@ def main() -> int:
         return 0
 
     if not announcements:
-        print("\nFetched 0 announcements — every fetcher returned no data (see the "
-              "per-fetcher samples above).")
-        print("If a sample is \"No Record Found!\" the proxy IP was blocked by BSE "
-              "(needs residential proxies); otherwise there were no filings in range.")
-        print("Nothing to do.")
+        print("\nFetched 0 announcements for this range (see per-fetcher samples "
+              "above) — likely a non-trading day, or the fetchers couldn't reach "
+              "BSE. Nothing to do.")
         return 0
 
     print(f"\nfetched    : {len(announcements)} announcements via {reader.source}")
