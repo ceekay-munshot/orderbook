@@ -1,9 +1,8 @@
 # Runtime dependencies for the orderbook ingestion pipeline.
 # Installed in CI by .github/workflows/ingest.yml.
 
-requests>=2.31,<3       # Cloudflare D1 HTTP API calls
+requests>=2.31,<3       # D1 HTTP API + BSE / Scrape.do / Firecrawl REST calls
 python-dotenv>=1.0,<2   # load a local .env during development
 
-# Added in later steps (kept out until the real logic lands):
-# openai>=1.30          # field extraction
-# firecrawl-py>=1.0     # page / PDF fetch + parse
+# Added in a later step (kept out until the real logic lands):
+# openai>=1.30          # field extraction (Step 5)

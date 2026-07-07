@@ -51,6 +51,8 @@ class ScrapedoClient:
         url: str,
         *,
         render: bool = False,
+        super_proxy: bool = False,
+        geo_code: str | None = None,
         extra_headers: dict[str, str] | None = None,
         retries: int = 2,
         backoff: float = 2.0,
@@ -58,8 +60,10 @@ class ScrapedoClient:
     ) -> str:
         """Fetch ``url`` through Scrape.do and return the target's response body.
 
-        Retries transient failures (network errors + 429/5xx) up to ``retries``
-        times with linear backoff. Raises :class:`ScrapedoError` on give-up.
+        ``super_proxy=True`` uses residential/mobile proxies (needed for sites
+        that block datacenter IPs, like BSE); ``geo_code`` geo-targets (e.g.
+        "in"). Retries transient failures (network errors + 429/5xx) up to
+        ``retries`` times with linear backoff. Raises :class:`ScrapedoError`.
         """
         if not self._api_key:
             raise ScrapedoError("no Scrape.do API key configured")
@@ -67,6 +71,10 @@ class ScrapedoClient:
         params: dict[str, str] = {"token": self._api_key, "url": url}
         if render:
             params["render"] = "true"
+        if super_proxy:
+            params["super"] = "true"
+        if geo_code:
+            params["geoCode"] = geo_code
         headers: dict[str, str] = {}
         if extra_headers:
             # Ask Scrape.do to forward our headers (Referer/User-Agent) to BSE.

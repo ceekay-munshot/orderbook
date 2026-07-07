@@ -19,14 +19,20 @@ When there are no rows (or the caller is IP-blocked) BSE returns the JSON string
 from __future__ import annotations
 
 import datetime
+import html
 import json
 import re
 import time
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 import requests
 
+from config import Config
+from firecrawl_client import FirecrawlClient
 from scrapedo_client import ScrapedoClient
+
+# A fetcher fetches a URL and returns the raw response body text.
+Fetcher = tuple[str, Callable[[str], str]]
 
 BSE_ANN_API = "https://api.bseindia.com/BseIndiaAPI/api/AnnGetData/w"
 ATTACH_LIVE_BASE = "https://www.bseindia.com/xml-data/corpfiling/AttachLive/"
@@ -192,66 +198,143 @@ def build_ann_url(page: int, from_date: datetime.date, to_date: datetime.date) -
     )
 
 
+def _first_json(text: str | None) -> Any:
+    """Best-effort parse of a BSE/proxy response body into a JSON value.
+
+    Handles: raw JSON; the string "No Record Found!"; and JSON wrapped in HTML
+    (e.g. when a proxy like Firecrawl returns the body inside a page).
+    """
+    if not text:
+        return None
+    s = text.strip()
+    try:
+        return json.loads(s)
+    except (ValueError, TypeError):
+        pass
+    unescaped = html.unescape(s)
+    try:
+        return json.loads(unescaped)
+    except (ValueError, TypeError):
+        pass
+    start, end = unescaped.find("{"), unescaped.rfind("}")
+    if start != -1 and end > start:
+        try:
+            return json.loads(unescaped[start : end + 1])
+        except (ValueError, TypeError):
+            pass
+    return None
+
+
 def parse_table(text: str) -> list[dict[str, Any]]:
     """Extract the 'Table' rows from a BSE response body (handles 'No Record Found!')."""
-    try:
-        data = json.loads(text)
-    except (ValueError, TypeError):
-        return []
+    data = _first_json(text)
     if isinstance(data, dict):
         table = data.get("Table")
         return table if isinstance(table, list) else []
     return []  # e.g. the string "No Record Found!"
 
 
+def build_fetchers(config: Config, *, timeout: float = 30.0) -> list[Fetcher]:
+    """Build the ordered fetcher chain from available API keys.
+
+    Order: Scrape.do (residential) -> Firecrawl -> direct. BSE blocks datacenter
+    IPs, so Scrape.do uses `super=true` (residential) + geoCode=in, and Firecrawl
+    uses proxy=auto (escalates to stealth). Direct is a keyless last resort.
+    """
+    fetchers: list[Fetcher] = []
+
+    if config.scrapedo_api_key:
+        scrapedo = ScrapedoClient.from_config(config)
+
+        def _via_scrapedo(url: str) -> str:
+            return scrapedo.get(
+                url, super_proxy=True, geo_code="in", extra_headers=BROWSER_HEADERS
+            )
+
+        fetchers.append(("scrape.do", _via_scrapedo))
+
+    if config.firecrawl_api_key:
+        firecrawl = FirecrawlClient.from_config(config)
+
+        def _via_firecrawl(url: str) -> str:
+            return firecrawl.scrape(url)
+
+        fetchers.append(("firecrawl", _via_firecrawl))
+
+    _session = requests.Session()
+
+    def _via_direct(url: str) -> str:
+        return _session.get(url, headers=BROWSER_HEADERS, timeout=timeout).text
+
+    fetchers.append(("direct", _via_direct))
+    return fetchers
+
+
 class BSEReader:
-    """Pages through BSE announcements for a date range (via Scrape.do or direct)."""
+    """Pages through BSE announcements, trying a chain of fetchers until one works."""
 
     def __init__(
         self,
-        scrapedo: ScrapedoClient | None = None,
+        fetchers: list[Fetcher],
         *,
-        timeout: float = 30.0,
         page_delay: float = 1.0,
         max_pages: int = 50,
-        session: requests.Session | None = None,
+        sample_len: int = 300,
     ) -> None:
-        self._scrapedo = scrapedo
-        self._timeout = timeout
+        self._fetchers = fetchers
         self._page_delay = page_delay
         self._max_pages = max_pages
-        self._session = session or requests.Session()
+        self._sample_len = sample_len
+        self.source: str | None = None  # which fetcher produced the rows
 
-    def _fetch_page_text(self, url: str) -> str:
-        if self._scrapedo is not None:
-            return self._scrapedo.get(url, extra_headers=BROWSER_HEADERS)
-        # Direct best-effort (used only in local testing; datacenter IPs are
-        # usually blocked by BSE and get "No Record Found!").
-        resp = self._session.get(url, headers=BROWSER_HEADERS, timeout=self._timeout)
-        return resp.text
+    def _probe(
+        self, url: str
+    ) -> tuple[str, Callable[[str], str], list[dict[str, Any]]] | None:
+        """Try each fetcher on `url`; return the first that yields rows (logged)."""
+        for name, fetch in self._fetchers:
+            try:
+                text = fetch(url)
+            except Exception as exc:  # noqa: BLE001 - log and try the next fetcher
+                print(f"  [{name}] error: {type(exc).__name__}: {exc}")
+                continue
+            rows = parse_table(text)
+            sample = " ".join((text or "").split())[: self._sample_len]
+            print(f"  [{name}] {len(text or '')} chars -> {len(rows)} rows | sample: {sample!r}")
+            if rows:
+                return name, fetch, rows
+        return None
 
     def fetch_range(
         self, from_date: datetime.date, to_date: datetime.date
     ) -> list[dict[str, Any]]:
         """Fetch all announcement rows for [from_date, to_date], paging until done."""
-        rows: list[dict[str, Any]] = []
-        seen_ids: set[str] = set()
-        for page in range(1, self._max_pages + 1):
-            text = self._fetch_page_text(build_ann_url(page, from_date, to_date))
-            page_rows = parse_table(text)
-            if not page_rows:
+        probe = self._probe(build_ann_url(1, from_date, to_date))
+        if probe is None:
+            return []
+        name, fetch, first_rows = probe
+        self.source = name
+
+        rows: list[dict[str, Any]] = list(first_rows)
+        seen_ids = {str(r.get("NEWSID")) for r in first_rows}
+        total_pages = first_rows[0].get("TotalPageCnt")
+
+        page = 2
+        while page <= self._max_pages and not (total_pages and page > int(total_pages)):
+            time.sleep(self._page_delay)
+            try:
+                text = fetch(build_ann_url(page, from_date, to_date))
+            except Exception as exc:  # noqa: BLE001
+                print(f"  [{name}] page {page} error: {exc}")
                 break
-            # New rows only — guards against the API ignoring pageno.
-            fresh = [r for r in page_rows if str(r.get("NEWSID")) not in seen_ids]
+            fresh = [r for r in parse_table(text) if str(r.get("NEWSID")) not in seen_ids]
             if not fresh:
                 break
             for r in fresh:
                 seen_ids.add(str(r.get("NEWSID")))
             rows.extend(fresh)
-            total_pages = page_rows[0].get("TotalPageCnt")
-            if total_pages and page >= int(total_pages):
-                break
-            time.sleep(self._page_delay)
+            page += 1
+
+        print(f"  -> fetched {len(rows)} rows via {name}")
         return rows
 
 

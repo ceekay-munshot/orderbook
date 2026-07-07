@@ -19,10 +19,9 @@ from __future__ import annotations
 import datetime
 import os
 
-from bse_client import BSEReader, iter_matched
+from bse_client import BSEReader, build_fetchers, iter_matched
 from config import Config
 from d1_client import D1Client, compute_dedup_key
-from scrapedo_client import ScrapedoClient
 
 
 def _int_env(name: str, default: int) -> int:
@@ -74,14 +73,12 @@ def main() -> int:
     print(f"date range : {from_date} -> {to_date}")
 
     # --- fetch ---------------------------------------------------------------
-    scrapedo = ScrapedoClient.from_config(config) if config.scrapedo_api_key else None
-    if scrapedo is not None:
-        print("fetch mode : Scrape.do proxy")
-    else:
-        print("fetch mode : direct (best-effort — no SCRAPEDO_API_KEY; BSE usually "
-              "blocks datacenter IPs)")
+    fetchers = build_fetchers(config)
+    print(f"fetch chain: {', '.join(name for name, _ in fetchers)}")
+    print("(BSE blocks datacenter IPs; Scrape.do uses residential 'super', "
+          "Firecrawl uses stealth proxies)\n")
 
-    reader = BSEReader(scrapedo=scrapedo)
+    reader = BSEReader(fetchers)
     try:
         announcements = reader.fetch_range(from_date, to_date)
     except Exception as exc:  # noqa: BLE001 - never crash the workflow on fetch
@@ -90,18 +87,14 @@ def main() -> int:
         return 0
 
     if not announcements:
-        if scrapedo is not None:
-            print("\nFetched 0 announcements (nothing filed in range, or upstream "
-                  "returned no data).")
-        else:
-            print("\nDirect fetch returned no data — BSE blocks datacenter IPs "
-                  "(\"No Record Found!\").")
-            print("Set the SCRAPEDO_API_KEY secret so the workflow can fetch "
-                  "through the proxy.")
+        print("\nFetched 0 announcements — every fetcher returned no data (see the "
+              "per-fetcher samples above).")
+        print("If a sample is \"No Record Found!\" the proxy IP was blocked by BSE "
+              "(needs residential proxies); otherwise there were no filings in range.")
         print("Nothing to do.")
         return 0
 
-    print(f"fetched    : {len(announcements)} announcements")
+    print(f"\nfetched    : {len(announcements)} announcements via {reader.source}")
 
     # --- filter + parse ------------------------------------------------------
     matched: list[tuple[dict, str, str | None]] = []
