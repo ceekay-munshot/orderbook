@@ -1,0 +1,28 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "orderbook-web",
+  "main": ".open-next/worker.js",
+  "compatibility_date": "2025-03-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "binding": "ASSETS",
+    "directory": ".open-next/assets"
+  },
+  "observability": {
+    "enabled": true
+  },
+  // Cloudflare D1 (SQLite). The dashboard reads the order book through this
+  // binding, exposed to the Worker as `env.DB`.
+  //
+  // `database_id` below is a PLACEHOLDER. Create the real database with
+  //   wrangler d1 create orderbook
+  // and paste the returned id here (and into the CF_D1_DATABASE_ID secret used
+  // by the Python ingestion pipeline).
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "orderbook",
+      "database_id": "00000000-0000-0000-0000-000000000000"
+    }
+  ]
+}

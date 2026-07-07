@@ -1,0 +1,47 @@
+@import "tailwindcss";
+
+/*
+ * Orderbook design system
+ * -----------------------
+ * Light, colorful, visual-heavy, modern. NOT a dark "terminal/Bloomberg" look.
+ * The palette + font tokens below are the shared visual vocabulary for the
+ * whole app. Extend here rather than hard-coding one-off colors in components.
+ */
+@theme {
+  /* Clean, modern system font stack (no network dependency at build time). */
+  --font-sans:
+    "Inter", "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI",
+    Roboto, Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+
+  /* Brand scale (indigo -> violet). Used for primary accents + the logo mark. */
+  --color-brand-50: #eef2ff;
+  --color-brand-100: #e0e7ff;
+  --color-brand-200: #c7d2fe;
+  --color-brand-300: #a5b4fc;
+  --color-brand-400: #818cf8;
+  --color-brand-500: #6366f1;
+  --color-brand-600: #4f46e5;
+  --color-brand-700: #4338ca;
+  --color-brand-800: #3730a3;
+  --color-brand-900: #312e81;
+
+  /* Soft shadow used by cards + tiles for a light, floating feel. */
+  --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.04),
+    0 8px 24px -12px rgba(79, 70, 229, 0.18);
+}
+
+/*
+ * Colorful, airy page background. Set here (not via utilities) so the light
+ * gradient is guaranteed regardless of which Tailwind gradient utilities are
+ * in play.
+ */
+body {
+  min-height: 100vh;
+  color: #0f172a; /* slate-900 */
+  background:
+    radial-gradient(1100px 620px at 100% -8%, #eef2ff 0%, transparent 58%),
+    radial-gradient(940px 520px at -8% 4%, #ecfeff 0%, transparent 55%),
+    radial-gradient(760px 520px at 60% 108%, #fdf2f8 0%, transparent 55%),
+    linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+  background-attachment: fixed;
+}
