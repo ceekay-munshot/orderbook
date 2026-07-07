@@ -185,13 +185,13 @@ class FirecrawlClient:
             raise FirecrawlError("no Firecrawl API key configured")
 
         client_timeout = float(timeout or self._timeout)
-        # No top-level await: Firecrawl runs the script as a plain (non-async)
-        # function body, so wrap the async work in an IIFE and return its promise
-        # (Playwright awaits a returned promise).
+        # Firecrawl evaluates the script as a bare expression (page.evaluate), so
+        # NO `return` and NO top-level `await` are allowed. Provide an expression
+        # that evaluates to a promise; Playwright auto-awaits the returned promise.
         script = (
-            "return (async () => { const r = await fetch(" + json.dumps(target_url)
+            "fetch(" + json.dumps(target_url)
             + ", {headers: {'Accept': 'application/json, text/plain, */*'}, "
-            "credentials: 'include'}); return await r.text(); })();"
+            "credentials: 'include'}).then(r => r.text())"
         )
         payload: dict[str, object] = {
             "url": base_url,
