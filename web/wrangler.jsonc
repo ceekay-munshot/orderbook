@@ -18,11 +18,15 @@
   //   wrangler d1 create orderbook
   // and paste the returned id here (and into the CF_D1_DATABASE_ID secret used
   // by the Python ingestion pipeline).
+  //
+  // `migrations_dir` points at the shared /db migrations folder (relative to
+  // this config file). Apply with `npm run db:migrate:local`.
   "d1_databases": [
     {
       "binding": "DB",
       "database_name": "orderbook",
-      "database_id": "00000000-0000-0000-0000-000000000000"
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "../db/migrations"
     }
   ]
 }

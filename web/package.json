@@ -9,7 +9,10 @@
     "start": "next start",
     "preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
     "deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
-    "cf-typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts"
+    "cf-typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts",
+    "db:migrate:local": "wrangler d1 migrations apply orderbook --local",
+    "db:migrate:remote": "wrangler d1 migrations apply orderbook --remote",
+    "db:seed:local": "wrangler d1 execute orderbook --local --file=../db/seed.sql"
   },
   "dependencies": {
     "next": "16.2.10",

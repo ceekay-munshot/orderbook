@@ -1,7 +1,22 @@
 import { StatTile } from "@/components/StatTile";
 import { OrderCard } from "@/components/OrderCard";
 import { Badge } from "@/components/Badge";
-import { mockOrders, mockStats } from "@/lib/mockData";
+import { Card } from "@/components/Card";
+import { getOrders, type Order } from "@/lib/orders";
+import type { AccentColor } from "@/lib/mockData";
+
+// Orders are read from D1 per request — never statically prerendered.
+export const dynamic = "force-dynamic";
+
+/* Card accents cycle through the palette so the grid stays colorful. */
+const ACCENTS: AccentColor[] = [
+  "indigo",
+  "emerald",
+  "amber",
+  "rose",
+  "violet",
+  "sky",
+];
 
 /* Inline icons (no icon dependency) — one per KPI tile. */
 const icons = {
@@ -39,9 +54,32 @@ const icons = {
   ),
 };
 
-const statIcons = [icons.orders, icons.value, icons.companies, icons.latest];
+function formatDate(iso: string | null): string {
+  if (!iso) return "—";
+  const [y, m, d] = iso.slice(0, 10).split("-").map(Number);
+  if (!y || !m || !d) return iso;
+  const months = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+  ];
+  return `${d} ${months[m - 1]} ${y}`;
+}
 
-export default function Home() {
+function formatCrore(total: number): string {
+  return `₹${Math.round(total).toLocaleString("en-IN")} Cr`;
+}
+
+export default async function Home() {
+  const orders = await getOrders();
+
+  // KPI row derived from the real (or fallback) orders.
+  const totalCrore = orders.reduce((sum, o) => sum + (o.orderValueCrore ?? 0), 0);
+  const companies = new Set(orders.map((o) => o.companyName)).size;
+  const latestFiledAt = orders.reduce<string | null>(
+    (max, o) => (o.filedAt && (!max || o.filedAt > max) ? o.filedAt : max),
+    null,
+  );
+
   return (
     <div className="min-h-screen">
       {/* Header */}
@@ -67,7 +105,7 @@ export default function Home() {
             </div>
           </div>
           <Badge color="emerald" withDot>
-            Mock data · scaffold
+            Demo data
           </Badge>
         </div>
       </header>
@@ -97,17 +135,34 @@ export default function Home() {
           aria-label="Key statistics"
           className="mb-10 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4"
         >
-          {mockStats.map((stat, i) => (
-            <StatTile
-              key={stat.label}
-              label={stat.label}
-              value={stat.value}
-              delta={stat.delta}
-              positive={stat.positive}
-              accent={stat.accent}
-              icon={statIcons[i]}
-            />
-          ))}
+          <StatTile
+            label="Orders tracked"
+            value={String(orders.length)}
+            hint="in the order book"
+            accent="indigo"
+            icon={icons.orders}
+          />
+          <StatTile
+            label="Total order value"
+            value={totalCrore > 0 ? formatCrore(totalCrore) : "—"}
+            hint="sum of disclosed values"
+            accent="emerald"
+            icon={icons.value}
+          />
+          <StatTile
+            label="Companies covered"
+            value={String(companies)}
+            hint="distinct issuers"
+            accent="violet"
+            icon={icons.companies}
+          />
+          <StatTile
+            label="Latest filing"
+            value={formatDate(latestFiledAt)}
+            hint="most recent order"
+            accent="rose"
+            icon={icons.latest}
+          />
         </section>
 
         {/* Orders */}
@@ -121,23 +176,54 @@ export default function Home() {
                 Newest first · across all tracked companies
               </p>
             </div>
-            <Badge color="indigo">{mockOrders.length} shown</Badge>
+            {orders.length > 0 && (
+              <Badge color="indigo">{orders.length} shown</Badge>
+            )}
           </div>
 
-          <div className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3">
-            {mockOrders.map((order) => (
-              <OrderCard key={order.id} order={order} />
-            ))}
-          </div>
+          {orders.length > 0 ? (
+            <div className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3">
+              {orders.map((order, i) => (
+                <OrderCard
+                  key={order.id}
+                  order={order}
+                  accent={ACCENTS[i % ACCENTS.length]}
+                />
+              ))}
+            </div>
+          ) : (
+            <EmptyState />
+          )}
         </section>
 
         {/* Footer note */}
         <footer className="mt-12 border-t border-slate-200/70 pt-6 text-sm text-slate-400">
-          Placeholder dashboard with mock data. Filters, search, and per-company
-          history arrive in later steps. Data will be read live from Cloudflare
-          D1 (binding <code className="text-slate-500">DB</code>).
+          Reading orders from Cloudflare D1 (binding{" "}
+          <code className="text-slate-500">DB</code>). Filters, search, and
+          per-company history arrive in later steps.
         </footer>
       </main>
     </div>
+  );
+}
+
+function EmptyState() {
+  return (
+    <Card className="flex flex-col items-center justify-center gap-3 px-6 py-16 text-center">
+      <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-indigo-50 text-indigo-500">
+        <svg className="h-6 w-6" viewBox="0 0 20 20" fill="currentColor" aria-hidden>
+          <path d="M3 4a1 1 0 011-1h12a1 1 0 011 1v2a1 1 0 01-1 1H4a1 1 0 01-1-1V4zM3 10a1 1 0 011-1h12a1 1 0 011 1v6a1 1 0 01-1 1H4a1 1 0 01-1-1v-6z" />
+        </svg>
+      </div>
+      <h3 className="text-base font-semibold text-slate-800">No orders yet</h3>
+      <p className="max-w-md text-sm text-slate-500">
+        The order book is connected to D1 but empty. Run{" "}
+        <code className="rounded bg-slate-100 px-1.5 py-0.5 text-slate-600">
+          npm run db:seed:local
+        </code>{" "}
+        to load demo rows, or wait for the ingestion pipeline (Steps 3–5) to
+        populate it.
+      </p>
+    </Card>
   );
 }

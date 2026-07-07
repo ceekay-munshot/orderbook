@@ -1,16 +1,9 @@
-/**
- * MOCK DATA — placeholder only.
- *
- * These orders are hand-written examples so the scaffold renders something
- * realistic. In later steps this is replaced by real rows read from Cloudflare
- * D1 (via the `DB` binding) that the Python ingestion pipeline writes.
- *
- * The five extracted fields per order are:
- *   value · awarder · duration · targetIndustry · description
- * plus a link to the original filing (sourceUrl) — every data point stays
- * source- and evidence-backed.
- */
+import type { Order } from "./orders";
 
+/**
+ * Accent colors for the design system (cards, badges, stat tiles).
+ * Card accents are assigned in the UI, not stored in the DB.
+ */
 export type AccentColor =
   | "indigo"
   | "emerald"
@@ -19,116 +12,92 @@ export type AccentColor =
   | "sky"
   | "violet";
 
-export interface Order {
-  id: string;
-  /** Company that received / disclosed the order. */
-  company: string;
-  /** Ticker or scrip code shown as a small badge. */
-  ticker: string;
-  /** Contract / order value, pre-formatted for display. */
-  value: string;
-  /** Who placed the order (customer / awarding entity). */
-  awarder: string;
-  /** Execution timeline of the order. */
-  duration: string;
-  /** Sector the order targets. */
-  targetIndustry: string;
-  /** One-line summary of the order. */
-  description: string;
-  /** Link to the original BSE filing / attachment (evidence). */
-  sourceUrl: string;
-  /** Where the data was extracted from (shown on the card). */
-  sourceLabel: string;
-  /** Filing date (ISO string). */
-  filedAt: string;
-  /** Accent color used for this card's highlights. */
-  accent: AccentColor;
-}
-
+/**
+ * DEMO fallback orders — used by getOrders() ONLY when the D1 `DB` binding
+ * isn't available (e.g. plain `next dev` without the Cloudflare context), so
+ * the dashboard still renders. Real rows come from D1 (see db/seed.sql for the
+ * seeded demo data, and Steps 3-5 for real ingestion). Shape matches `Order`.
+ */
 export const mockOrders: Order[] = [
   {
-    id: "mock-1",
-    company: "Larsen & Toubro",
-    ticker: "LT",
-    value: "₹2,900 Cr",
+    id: 1,
+    companyName: "Larsen & Toubro",
+    bseScripCode: "500510",
+    nseSymbol: "LT",
+    isin: "INE018A01030",
+    orderValueText: "INR 2,900.00 Crore",
+    orderValueCrore: 2900,
     awarder: "Ministry of Road Transport & Highways",
-    duration: "36 months",
-    targetIndustry: "Infrastructure",
+    durationText: "36.0 Months",
+    durationMonths: 36,
+    targetIndustry: "Infrastructure - Roads",
     description:
       "EPC order to build a 4-lane access-controlled expressway package, including major bridges and interchanges.",
-    sourceUrl: "https://www.bseindia.com/",
-    sourceLabel: "BSE announcement (PDF)",
-    filedAt: "2026-07-06",
-    accent: "indigo",
+    exchange: "BSE",
+    category: "Award of Order / Receipt of Order",
+    headline: "L&T wins Rs 2,900 crore expressway EPC order (demo fallback)",
+    attachmentUrl: "https://www.bseindia.com/",
+    sourceLabel: "BSE Filing",
+    extractionConfidence: 0.93,
+    extractionModel: "gpt-4o",
+    bseAnnouncementId: "MOCK-LT-1",
+    dedupKey: "MOCK-LT-1",
+    filedAt: "2026-07-06T10:00:00Z",
+    createdAt: "2026-07-06T10:05:00Z",
+    updatedAt: "2026-07-06T10:05:00Z",
   },
   {
-    id: "mock-2",
-    company: "Bharat Heavy Electricals",
-    ticker: "BHEL",
-    value: "₹1,240 Cr",
+    id: 2,
+    companyName: "Bharat Heavy Electricals",
+    bseScripCode: "500103",
+    nseSymbol: "BHEL",
+    isin: "INE257A01026",
+    orderValueText: "INR 1,240.00 Crore",
+    orderValueCrore: 1240,
     awarder: "NTPC Ltd.",
-    duration: "28 months",
-    targetIndustry: "Power & Energy",
+    durationText: "28.0 Months",
+    durationMonths: 28,
+    targetIndustry: "Capital Goods - Electrical Equipment",
     description:
       "Supply and installation of flue-gas desulphurisation (FGD) systems across two thermal power units.",
-    sourceUrl: "https://www.bseindia.com/",
-    sourceLabel: "BSE announcement (PDF)",
-    filedAt: "2026-07-05",
-    accent: "emerald",
+    exchange: "BSE",
+    category: "Award of Order / Receipt of Order",
+    headline: "BHEL bags Rs 1,240 crore FGD order from NTPC (demo fallback)",
+    attachmentUrl: "https://www.bseindia.com/",
+    sourceLabel: "BSE Filing",
+    extractionConfidence: 0.94,
+    extractionModel: "gpt-4o",
+    bseAnnouncementId: "MOCK-BHEL-1",
+    dedupKey: "MOCK-BHEL-1",
+    filedAt: "2026-07-05T09:30:00Z",
+    createdAt: "2026-07-05T09:35:00Z",
+    updatedAt: "2026-07-05T09:35:00Z",
   },
   {
-    id: "mock-3",
-    company: "Rail Vikas Nigam",
-    ticker: "RVNL",
-    value: "₹785 Cr",
+    id: 3,
+    companyName: "Rail Vikas Nigam",
+    bseScripCode: "542649",
+    nseSymbol: "RVNL",
+    isin: "INE415G01027",
+    orderValueText: "INR 785.00 Crore",
+    orderValueCrore: 785,
     awarder: "Central Railway",
-    duration: "24 months",
-    targetIndustry: "Railways",
+    durationText: "24.0 Months",
+    durationMonths: 24,
+    targetIndustry: "Infrastructure - Railways",
     description:
       "Design and construction of railway electrification and automatic signalling upgrades on a busy trunk route.",
-    sourceUrl: "https://www.bseindia.com/",
-    sourceLabel: "BSE announcement (PDF)",
-    filedAt: "2026-07-03",
-    accent: "amber",
-  },
-];
-
-export interface Stat {
-  label: string;
-  value: string;
-  delta: string;
-  /** Whether the delta is a positive trend. */
-  positive: boolean;
-  accent: AccentColor;
-}
-
-export const mockStats: Stat[] = [
-  {
-    label: "Orders tracked",
-    value: "128",
-    delta: "+12 this week",
-    positive: true,
-    accent: "indigo",
-  },
-  {
-    label: "Total order value",
-    value: "₹18,420 Cr",
-    delta: "+₹3,100 Cr",
-    positive: true,
-    accent: "emerald",
-  },
-  {
-    label: "Companies covered",
-    value: "37",
-    delta: "+3 new",
-    positive: true,
-    accent: "violet",
-  },
-  {
-    label: "Latest filing",
-    value: "Today",
-    delta: "6 Jul 2026",
-    positive: true,
-    accent: "rose",
+    exchange: "BSE",
+    category: "Award of Order / Receipt of Order",
+    headline: "RVNL secures Rs 785 crore railway electrification order (demo fallback)",
+    attachmentUrl: "https://www.bseindia.com/",
+    sourceLabel: "BSE Filing",
+    extractionConfidence: 0.89,
+    extractionModel: "gpt-4o",
+    bseAnnouncementId: "MOCK-RVNL-1",
+    dedupKey: "MOCK-RVNL-1",
+    filedAt: "2026-07-03T13:15:00Z",
+    createdAt: "2026-07-03T13:20:00Z",
+    updatedAt: "2026-07-03T13:20:00Z",
   },
 ];

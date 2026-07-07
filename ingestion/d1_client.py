@@ -12,6 +12,7 @@ Body: {"sql": "...", "params": [...]}
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any, Sequence
 
 import requests
@@ -23,6 +24,51 @@ CLOUDFLARE_API_BASE = "https://api.cloudflare.com/client/v4"
 
 class D1Error(RuntimeError):
     """Raised when the D1 API returns an error or a non-2xx response."""
+
+
+# Columns written by upsert_order(), in bind order. Excludes auto-managed
+# columns: id, created_at, updated_at.
+ORDER_COLUMNS: tuple[str, ...] = (
+    "company_name",
+    "bse_scrip_code",
+    "nse_symbol",
+    "isin",
+    "order_value_text",
+    "order_value_crore",
+    "awarder",
+    "duration_text",
+    "duration_months",
+    "target_industry",
+    "description",
+    "exchange",
+    "category",
+    "headline",
+    "attachment_url",
+    "source_label",
+    "raw_text",
+    "extraction_confidence",
+    "extraction_model",
+    "bse_announcement_id",
+    "dedup_key",
+    "filed_at",
+)
+
+
+def compute_dedup_key(order: dict[str, Any]) -> str:
+    """Return a stable dedup key so we never double-insert the same filing.
+
+    Prefers the BSE announcement id (NEWSID) when present; otherwise falls back
+    to a sha1 hash of "scrip|filed_at|headline". Mirrors the strategy used in
+    db/seed.sql.
+    """
+    announcement_id = order.get("bse_announcement_id")
+    if announcement_id:
+        return str(announcement_id)
+    scrip = order.get("bse_scrip_code") or ""
+    filed_at = order.get("filed_at") or ""
+    headline = order.get("headline") or ""
+    basis = f"{scrip}|{filed_at}|{headline}"
+    return hashlib.sha1(basis.encode("utf-8")).hexdigest()
 
 
 class D1Client:
@@ -112,3 +158,36 @@ class D1Client:
         if not result:
             return []
         return result[0].get("results", []) or []
+
+    def upsert_order(self, order: dict[str, Any]) -> list[dict[str, Any]]:
+        """Insert an order, or update it in place if its dedup_key already exists.
+
+        `order` is a dict keyed by the snake_case column names (see
+        db/migrations/0001_init.sql). Missing keys are stored as NULL, except:
+          - `exchange` defaults to 'BSE'
+          - `dedup_key` is computed via compute_dedup_key() when absent
+        `updated_at` is refreshed on every update. This is the write path that
+        Steps 3-5 (BSE ingestion + extraction) will call.
+        """
+        row = dict(order)
+        row["exchange"] = row.get("exchange") or "BSE"
+        if not row.get("dedup_key"):
+            row["dedup_key"] = compute_dedup_key(row)
+
+        columns = ", ".join(ORDER_COLUMNS)
+        placeholders = ", ".join("?" for _ in ORDER_COLUMNS)
+        params = [row.get(col) for col in ORDER_COLUMNS]
+
+        # On conflict, refresh every column except the conflict key, and bump
+        # updated_at. created_at is preserved.
+        updates = ", ".join(
+            f"{col} = excluded.{col}"
+            for col in ORDER_COLUMNS
+            if col != "dedup_key"
+        )
+        sql = (
+            f"INSERT INTO orders ({columns}) VALUES ({placeholders}) "
+            f"ON CONFLICT(dedup_key) DO UPDATE SET {updates}, "
+            f"updated_at = datetime('now')"
+        )
+        return self.query(sql, params)
