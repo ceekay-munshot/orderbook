@@ -326,6 +326,42 @@ def enrich_one(
     return fields, note
 
 
+def renormalize_pass(client: D1Client) -> None:
+    """Re-parse value/duration numbers from phrases ALREADY stored in D1 — free,
+    no API calls. Fills rows where a phrase was saved but couldn't be turned into
+    a number at the time (e.g. before a parser improvement), and runs before the
+    paid PDF pass so it can shrink the list of orders still needing a PDF.
+    """
+    try:
+        rows = client.orders_with_unparsed_text()
+    except Exception as exc:  # noqa: BLE001
+        print(f"\n  re-normalize: could not query ({exc}); skipping.")
+        return
+    if not rows:
+        return
+    fixed_value = fixed_duration = 0
+    for row in rows:
+        fields: dict = {}
+        if row.get("order_value_crore") is None and row.get("order_value_text"):
+            _vt, vcrore = value_phrase_to_crore(row["order_value_text"])
+            if vcrore is not None:
+                fields["order_value_crore"] = vcrore
+                fixed_value += 1
+        if row.get("duration_months") is None and row.get("duration_text"):
+            _dt, dmonths = duration_to_months(row["duration_text"])
+            if dmonths is not None:
+                fields["duration_months"] = dmonths
+                fixed_duration += 1
+        if fields:
+            try:
+                client.update_order(row["id"], fields)
+            except Exception as exc:  # noqa: BLE001
+                print(f"  re-normalize: update failed for id={row.get('id')} ({exc})")
+    if fixed_value or fixed_duration:
+        print(f"\nre-normalize: filled value {fixed_value}, duration "
+              f"{fixed_duration} from stored text (no API calls)")
+
+
 def enrich_pass(client: D1Client, config: Config, limit: int) -> None:
     """Phase 2: read PDFs for DB orders still missing a value or duration.
 
@@ -413,6 +449,7 @@ def main() -> int:
 
     # Phase 2 — enrich existing DB rows that still need value/duration.
     if writing and client is not None:
+        renormalize_pass(client)  # free: recover numbers from stored phrases
         enrich_pass(client, config, _int_env("INGEST_LIMIT", 10))
 
     return 0

@@ -229,6 +229,22 @@ class D1Client:
         )
         return self.query(sql, [int(limit)])
 
+    def orders_with_unparsed_text(self) -> list[dict[str, Any]]:
+        """Return orders that have a value/duration *phrase* stored but no parsed
+        number yet — candidates for a free re-normalize (no API calls).
+
+        These are typically rows the enrichment step filled with a raw phrase it
+        couldn't turn into a number at the time; an improved parser can retry
+        them straight from the stored text.
+        """
+        sql = (
+            "SELECT id, order_value_text, order_value_crore, duration_text, "
+            "duration_months FROM orders "
+            "WHERE (order_value_crore IS NULL AND order_value_text IS NOT NULL) "
+            "OR (duration_months IS NULL AND duration_text IS NOT NULL)"
+        )
+        return self.query(sql)
+
     def update_order(
         self, row_id: Any, fields: dict[str, Any]
     ) -> list[dict[str, Any]]:

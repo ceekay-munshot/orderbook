@@ -206,6 +206,15 @@ _VALUE_UNIT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# A plain rupee figure written NUMBER-FIRST with no "Rs" prefix, flagged as
+# rupees by the classic "/-" suffix or a following "(Rupees ... only)" amount in
+# words — e.g. "9,23,44,635/- (Rupees Nine Crore ...)". The ≥5-digit floor
+# avoids grabbing small stray numbers. Converted as plain rupees (÷1,00,00,000).
+_RUPEE_FIGURE_RE = re.compile(
+    r"(\d[\d,]{4,}(?:\.\d+)?)\s*(?:/[-=]|\(?\s*rupees)",
+    re.IGNORECASE,
+)
+
 
 def value_phrase_to_crore(phrase: str | None) -> tuple[str | None, float | None]:
     """Normalize an order-value phrase (from the LLM) into crore.
@@ -229,32 +238,42 @@ def value_phrase_to_crore(phrase: str | None) -> tuple[str | None, float | None]
     # text, leave the number blank. crore/lakh are inherently INR, so their
     # presence means the amount is in rupees even if a stray "$" appears.
     low = s.casefold()
-    inr_marker = any(t in low for t in ("₹", "rs", "inr", "crore", " cr", "lakh", "lac"))
+    inr_marker = any(t in low for t in ("₹", "rs", "inr", "rupee", "crore", " cr", "lakh", "lac"))
     foreign_marker = any(t in low for t in ("$", "usd", "eur", "€", "gbp", "£", "aed", "sgd"))
     if foreign_marker and not inr_marker:
         return None, None
+    # explicit unit without a prefix: "10.85 Crore", "50 million"
     m = _VALUE_UNIT_RE.search(s)
-    if not m:
-        return None, None
-    num = float(m.group(1).replace(",", ""))
-    unit = m.group(2).lower()
-    if unit.startswith(("crore", "cr")):
-        crore = num
-    elif unit.startswith(("lakh", "lac")):
-        crore = num / 100
-    elif unit.startswith(("million", "mn")):
-        crore = num * 0.1
-    elif unit.startswith(("billion", "bn")):
-        crore = num * 100
-    else:
-        return None, None
-    return m.group(0).strip(), round(crore, 4)
+    if m:
+        num = float(m.group(1).replace(",", ""))
+        unit = m.group(2).lower()
+        if unit.startswith(("crore", "cr")):
+            crore = num
+        elif unit.startswith(("lakh", "lac")):
+            crore = num / 100
+        elif unit.startswith(("million", "mn")):
+            crore = num * 0.1
+        elif unit.startswith(("billion", "bn")):
+            crore = num * 100
+        else:
+            crore = None
+        if crore is not None:
+            return m.group(0).strip(), round(crore, 4)
+    # plain rupee figure written number-first ("9,23,44,635/- (Rupees ...)")
+    m2 = _RUPEE_FIGURE_RE.search(s)
+    if m2:
+        num = float(m2.group(1).replace(",", ""))
+        return m2.group(0).strip(), round(num / 1e7, 4)
+    return None, None
 
 
 # A duration phrase: number + time unit ("24 months", "2 years", "18-month",
 # "2.5 year period"). Years convert ×12.
+# The optional (?:\([^)]*\)\s*)? swallows a spelled-out parenthetical between the
+# number and the unit, e.g. "9(Nine) months" or "12 (Twelve) months".
 _DURATION_RE = re.compile(
-    r"(\d+(?:\.\d+)?)\s*[-\s]?\s*(years?|yrs?|months?|mons?|mos?|weeks?|days?)\b",
+    r"(\d+(?:\.\d+)?)\s*(?:\([^)]*\)\s*)?[-\s]?\s*"
+    r"(years?|yrs?|months?|mons?|mos?|weeks?|days?)\b",
     re.IGNORECASE,
 )
 _WORD_NUMBERS = {
