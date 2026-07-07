@@ -38,14 +38,18 @@ BSE_ANN_API = "https://api.bseindia.com/BseIndiaAPI/api/AnnGetData/w"
 ATTACH_LIVE_BASE = "https://www.bseindia.com/xml-data/corpfiling/AttachLive/"
 ATTACH_HIS_BASE = "https://www.bseindia.com/xml-data/corpfiling/AttachHis/"
 
-# Sent with each fetch (and forwarded by Scrape.do). BSE APIs check the Referer.
+# Sent with each fetch (forwarded by Scrape.do / Firecrawl). BSE's API serves
+# the Angular website HTML unless the request looks like an XHR from the SPA:
+# it checks Referer/Origin and expects application/json.
 BROWSER_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     ),
-    "Referer": "https://www.bseindia.com/corporates/ann.html",
     "Accept": "application/json, text/plain, */*",
+    "Referer": "https://www.bseindia.com/corporates/ann.html",
+    "Origin": "https://www.bseindia.com",
+    "X-Requested-With": "XMLHttpRequest",
 }
 
 # --- order classification ----------------------------------------------------
@@ -257,7 +261,8 @@ def build_fetchers(config: Config, *, timeout: float = 30.0) -> list[Fetcher]:
         firecrawl = FirecrawlClient.from_config(config)
 
         def _via_firecrawl(url: str) -> str:
-            return firecrawl.scrape(url)
+            # Forward the XHR headers so BSE returns API JSON, not the SPA HTML.
+            return firecrawl.scrape(url, headers=BROWSER_HEADERS)
 
         fetchers.append(("firecrawl", _via_firecrawl))
 

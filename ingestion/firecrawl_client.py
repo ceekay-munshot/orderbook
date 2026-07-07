@@ -46,6 +46,7 @@ class FirecrawlClient:
         self,
         url: str,
         *,
+        headers: dict[str, str] | None = None,
         proxy: str = "auto",
         retries: int = 1,
         backoff: float = 2.0,
@@ -53,19 +54,23 @@ class FirecrawlClient:
     ) -> str:
         """Fetch ``url`` via Firecrawl and return the raw response body.
 
-        ``proxy='auto'`` lets Firecrawl escalate to stealth/residential proxies
-        if a basic fetch is blocked (BSE needs this). Returns the first non-empty
-        of the rawHtml / html / markdown fields. Raises :class:`FirecrawlError`.
+        ``headers`` are forwarded to the target (e.g. Referer + application/json
+        so BSE returns its API JSON rather than the website HTML). ``proxy='auto'``
+        lets Firecrawl escalate to stealth/residential proxies if a basic fetch
+        is blocked. Returns the first non-empty of the rawHtml / html / markdown
+        fields. Raises :class:`FirecrawlError`.
         """
         if not self._api_key:
             raise FirecrawlError("no Firecrawl API key configured")
 
-        payload = {
+        payload: dict[str, object] = {
             "url": url,
             "formats": ["rawHtml"],
             "onlyMainContent": False,
             "proxy": proxy,
         }
+        if headers:
+            payload["headers"] = headers
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
