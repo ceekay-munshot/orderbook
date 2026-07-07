@@ -127,14 +127,34 @@ npm run deploy       # Build with OpenNext and deploy to Cloudflare Workers
 npm run cf-typegen   # Generate cloudflare-env.d.ts from wrangler.jsonc bindings
 ```
 
-**Deployment:** on push to `main`, Cloudflare builds and deploys `/web`. Before
-the first real deploy, create the D1 database and replace the placeholder
-`database_id` in `web/wrangler.jsonc`:
+### Deploying to Cloudflare (Workers Builds)
+
+The app lives in `web/` (a monorepo subdirectory) and deploys via the **OpenNext**
+adapter — it is **not** a plain static/Worker deploy. The connected Worker must
+be configured so its build runs OpenNext from `web/`. In the Cloudflare
+dashboard → your Worker → **Settings → Build**:
+
+| Setting              | Value                              |
+| -------------------- | ---------------------------------- |
+| Root directory       | `web`                              |
+| Build command        | `npx opennextjs-cloudflare build`  |
+| Deploy command       | `npx opennextjs-cloudflare deploy` |
+
+> The default `npx wrangler deploy` (run at the repo root) **fails** — there is
+> no `wrangler.jsonc` at the root and no OpenNext build has run, so wrangler
+> reports _"Could not detect a directory containing static files"_. The Worker
+> `name` in `web/wrangler.jsonc` must also match the connected Worker (`orderbook`).
+
+**Before the first real deploy — provision the remote D1** (until then the deploy
+fails on the `DB` binding because `database_id` is a placeholder):
 
 ```bash
 cd web
-npx wrangler d1 create orderbook   # paste the returned id into wrangler.jsonc
+npx wrangler d1 create orderbook          # paste the returned id into wrangler.jsonc
+npm run db:migrate:remote                  # apply the schema to the remote D1
 ```
+
+Also set the same id as the `CF_D1_DATABASE_ID` GitHub secret (used by ingestion).
 
 ## Run `/ingestion` locally
 

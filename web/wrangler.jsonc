@@ -1,6 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "orderbook-web",
+  // Must match the connected Cloudflare Worker name (Workers Builds deploys here).
+  "name": "orderbook",
   "main": ".open-next/worker.js",
   "compatibility_date": "2025-03-01",
   "compatibility_flags": ["nodejs_compat"],
