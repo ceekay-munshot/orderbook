@@ -78,7 +78,10 @@ def main() -> int:
     print("(BSE blocks datacenter IPs; Scrape.do uses residential 'super', "
           "Firecrawl uses stealth proxies)\n")
 
-    reader = BSEReader(fetchers)
+    # Firecrawl stealth solves BSE's bot check per page (~1-2 min each), so cap
+    # pages to bound run time/credits. Raise INGEST_MAX_PAGES once it's writing.
+    max_pages = _int_env("INGEST_MAX_PAGES", 10)
+    reader = BSEReader(fetchers, max_pages=max_pages)
     try:
         announcements = reader.fetch_range(from_date, to_date)
     except Exception as exc:  # noqa: BLE001 - never crash the workflow on fetch

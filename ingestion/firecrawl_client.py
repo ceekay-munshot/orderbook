@@ -31,7 +31,7 @@ class FirecrawlClient:
         self,
         api_key: str,
         *,
-        timeout: float = 60.0,
+        timeout: float = 150.0,
         session: requests.Session | None = None,
     ) -> None:
         self._api_key = api_key
@@ -48,7 +48,7 @@ class FirecrawlClient:
         *,
         headers: dict[str, str] | None = None,
         proxy: str = "auto",
-        retries: int = 1,
+        retries: int = 0,
         backoff: float = 2.0,
         timeout: float | None = None,
     ) -> str:
@@ -63,15 +63,19 @@ class FirecrawlClient:
         if not self._api_key:
             raise FirecrawlError("no Firecrawl API key configured")
 
+        client_timeout = float(timeout or self._timeout)
         payload: dict[str, object] = {
             "url": url,
             "formats": ["rawHtml"],
             "onlyMainContent": False,
             "proxy": proxy,
+            # Server-side budget for Firecrawl to solve BSE's bot check (stealth),
+            # kept just under our client read timeout.
+            "timeout": int(max(client_timeout - 15.0, 30.0) * 1000),
         }
         if headers:
             payload["headers"] = headers
-        headers = {
+        auth_headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
         }
@@ -82,8 +86,8 @@ class FirecrawlClient:
                 resp = self._session.post(
                     FIRECRAWL_SCRAPE_URL,
                     json=payload,
-                    headers=headers,
-                    timeout=timeout or self._timeout,
+                    headers=auth_headers,
+                    timeout=client_timeout,
                 )
             except requests.RequestException as exc:
                 last_err = exc

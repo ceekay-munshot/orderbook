@@ -48,7 +48,6 @@ BROWSER_HEADERS = {
     ),
     "Accept": "application/json, text/plain, */*",
     "Referer": "https://www.bseindia.com/corporates/ann.html",
-    "Origin": "https://www.bseindia.com",
     "X-Requested-With": "XMLHttpRequest",
 }
 
