@@ -11,7 +11,9 @@ Docs: https://docs.firecrawl.dev/
 
 from __future__ import annotations
 
+import json
 import time
+from typing import Any
 
 import requests
 
@@ -22,6 +24,56 @@ FIRECRAWL_SCRAPE_URL = "https://api.firecrawl.dev/v2/scrape"
 
 class FirecrawlError(RuntimeError):
     """Raised when a Firecrawl request fails."""
+
+
+def _find_marker_string(obj: Any) -> str | None:
+    """Recursively find a string that looks like a BSE API body."""
+    if isinstance(obj, str):
+        s = obj.strip()
+        if '"Table"' in obj or s in ('"No Record Found!"', "No Record Found!"):
+            return obj
+        return None
+    if isinstance(obj, dict):
+        for v in obj.values():
+            found = _find_marker_string(v)
+            if found is not None:
+                return found
+    elif isinstance(obj, list):
+        for v in obj:
+            found = _find_marker_string(v)
+            if found is not None:
+                return found
+    return None
+
+
+def _extract_js_return(body: dict) -> tuple[str | None, str]:
+    """Pull the executeJavascript return (the fetched API body) out of a Firecrawl
+    response. Returns (value, debug_note)."""
+    data = body.get("data") if isinstance(body, dict) else None
+    if not isinstance(data, dict):
+        return None, f"no data dict (top keys={list(body) if isinstance(body, dict) else type(body).__name__})"
+
+    candidates: list[Any] = []
+    actions = data.get("actions")
+    for container in (actions if isinstance(actions, dict) else {}, data):
+        jsr = container.get("javascriptReturns") if isinstance(container, dict) else None
+        if isinstance(jsr, list):
+            for item in jsr:
+                candidates.append(item.get("value") if isinstance(item, dict) else item)
+    for c in candidates:
+        if isinstance(c, str) and c.strip():
+            return c, "javascriptReturns"
+
+    found = _find_marker_string(body)
+    if found is not None:
+        return found, "recursive"
+
+    dbg = f"data keys={list(data)}"
+    if isinstance(actions, dict):
+        dbg += f", actions keys={list(actions)}"
+    else:
+        dbg += f", actions={type(actions).__name__}"
+    return None, dbg
 
 
 class FirecrawlClient:
@@ -112,3 +164,65 @@ class FirecrawlClient:
         raise FirecrawlError(
             f"Firecrawl request failed after {retries + 1} attempt(s): {last_err}"
         )
+
+    def fetch_json_via_browser(
+        self,
+        base_url: str,
+        target_url: str,
+        *,
+        proxy: str = "auto",
+        timeout: float | None = None,
+    ) -> str:
+        """Load ``base_url`` in Firecrawl's browser, then fetch ``target_url`` from
+        inside that page's JavaScript (a same-context XHR, like the site's own SPA).
+
+        This avoids forwarding browser-forbidden headers (Referer/User-Agent) —
+        the real page context supplies the correct Origin/Referer + cookies, so
+        BSE's API returns JSON instead of a webpage or a 400. Returns the fetched
+        body (raw JSON text), or "" if nothing usable came back.
+        """
+        if not self._api_key:
+            raise FirecrawlError("no Firecrawl API key configured")
+
+        client_timeout = float(timeout or self._timeout)
+        script = (
+            "const resp = await fetch(" + json.dumps(target_url) + ", "
+            "{headers: {'Accept': 'application/json, text/plain, */*'}, "
+            "credentials: 'include'}); return await resp.text();"
+        )
+        payload: dict[str, object] = {
+            "url": base_url,
+            "formats": ["rawHtml"],
+            "onlyMainContent": False,
+            "proxy": proxy,
+            "waitFor": 2500,
+            "timeout": int(max(client_timeout - 15.0, 30.0) * 1000),
+            "actions": [
+                {"type": "wait", "milliseconds": 2000},
+                {"type": "executeJavascript", "script": script},
+            ],
+        }
+        auth_headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+        try:
+            resp = self._session.post(
+                FIRECRAWL_SCRAPE_URL,
+                json=payload,
+                headers=auth_headers,
+                timeout=client_timeout,
+            )
+        except requests.RequestException as exc:
+            raise FirecrawlError(f"request failed: {exc}") from exc
+        if resp.status_code != 200:
+            raise FirecrawlError(f"HTTP {resp.status_code}: {resp.text[:300]}")
+        body = resp.json()
+        if not body.get("success", False):
+            raise FirecrawlError(f"Firecrawl error: {str(body)[:300]}")
+
+        value, debug = _extract_js_return(body)
+        if value is None:
+            print(f"    [firecrawl] in-page fetch returned nothing usable ({debug})")
+            return ""
+        return value

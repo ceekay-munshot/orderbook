@@ -35,6 +35,9 @@ from scrapedo_client import ScrapedoClient
 Fetcher = tuple[str, Callable[[str], str]]
 
 BSE_ANN_API = "https://api.bseindia.com/BseIndiaAPI/api/AnnGetData/w"
+# The announcements page — loaded first so Firecrawl can call the API from its
+# JS context (correct Origin/Referer/cookies).
+BSE_SITE = "https://www.bseindia.com/corporates/ann.html"
 ATTACH_LIVE_BASE = "https://www.bseindia.com/xml-data/corpfiling/AttachLive/"
 ATTACH_HIS_BASE = "https://www.bseindia.com/xml-data/corpfiling/AttachHis/"
 
@@ -260,8 +263,10 @@ def build_fetchers(config: Config, *, timeout: float = 30.0) -> list[Fetcher]:
         firecrawl = FirecrawlClient.from_config(config)
 
         def _via_firecrawl(url: str) -> str:
-            # Forward the XHR headers so BSE returns API JSON, not the SPA HTML.
-            return firecrawl.scrape(url, headers=BROWSER_HEADERS)
+            # Load BSE's page, then call the API from inside its JS context (like
+            # the SPA) — correct Origin/Referer/cookies, avoids the 400 that
+            # forwarding browser-forbidden headers causes.
+            return firecrawl.fetch_json_via_browser(BSE_SITE, url)
 
         fetchers.append(("firecrawl", _via_firecrawl))
 
