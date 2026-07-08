@@ -256,6 +256,17 @@ class D1Client:
             return 0, None
         return int(rows[0].get("n") or 0), rows[0].get("last")
 
+    def security_master_bse_symbol_populated(self) -> bool:
+        """True if any security_master row carries a BSE ticker (bse_symbol).
+
+        Lets the build pass detect a freshly-added-but-empty column (right after
+        the 0004 migration) and refill it once, even if the weekly cache is fresh.
+        """
+        rows = self.query(
+            "SELECT COUNT(*) AS n FROM security_master WHERE bse_symbol IS NOT NULL"
+        )
+        return bool(rows and int(rows[0].get("n") or 0) > 0)
+
     def upsert_security_master(
         self,
         rows: Sequence[dict[str, Any]],

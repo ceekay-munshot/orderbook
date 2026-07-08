@@ -482,9 +482,19 @@ def build_security_master_pass(client: D1Client | None, config: Config) -> None:
             print(f"  status check failed ({exc}); will attempt a build.")
             n_existing, last = 0, None
         if n_existing > 0 and not force and _within_days(last, 7):
-            print(f"  fresh: {n_existing} rows, updated {last} (<7d) — skipping "
-                  "rebuild. Set FORCE_MASTER_REBUILD=1 to force.")
-            return
+            # ...unless the new BSE-ticker column was just added and is still
+            # empty — then rebuild once to populate it (needed for BSE-only
+            # industry tagging) even though the cache is "fresh".
+            try:
+                has_bse = client.security_master_bse_symbol_populated()
+            except Exception:  # noqa: BLE001
+                has_bse = True
+            if has_bse:
+                print(f"  fresh: {n_existing} rows, updated {last} (<7d) — skipping "
+                      "rebuild. Set FORCE_MASTER_REBUILD=1 to force.")
+                return
+            print("  cache is fresh but the new BSE-ticker column is empty — "
+                  "rebuilding once to populate bse_symbol.")
         reason = "forced" if force else (
             f"stale (updated {last})" if n_existing else "empty")
         print(f"  rebuilding — {reason}")
