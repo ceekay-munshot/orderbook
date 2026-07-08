@@ -270,7 +270,10 @@ class D1Client:
         official lists, and every string is escaped, so this is injection-safe.
         Returns the number of rows written.
         """
-        cols = "(bse_scrip_code, isin, nse_symbol, company_name, source, updated_at)"
+        cols = (
+            "(bse_scrip_code, isin, nse_symbol, bse_symbol, company_name, "
+            "source, updated_at)"
+        )
         written = 0
         for i in range(0, len(rows), batch):
             chunk = rows[i : i + batch]
@@ -283,6 +286,7 @@ class D1Client:
                             _sql_literal(r.get("bse_scrip_code")),
                             _sql_literal(r.get("isin")),
                             _sql_literal(r.get("nse_symbol")),
+                            _sql_literal(r.get("bse_symbol")),
                             _sql_literal(r.get("company_name")),
                             _sql_literal(r.get("source")),
                             "datetime('now')",
@@ -295,6 +299,7 @@ class D1Client:
                 + ", ".join(tuples)
                 + " ON CONFLICT(bse_scrip_code) DO UPDATE SET "
                 "isin = excluded.isin, nse_symbol = excluded.nse_symbol, "
+                "bse_symbol = excluded.bse_symbol, "
                 "company_name = excluded.company_name, source = excluded.source, "
                 "updated_at = datetime('now')"
             )
@@ -303,12 +308,35 @@ class D1Client:
         return written
 
     def security_master_symbol_rows(self) -> list[dict[str, Any]]:
-        """Return security_master rows that HAVE an NSE symbol (scrip, isin,
-        nse_symbol, company_name) — the ones that can carry an industry."""
+        """Return security_master rows that can carry an industry — i.e. have an
+        NSE symbol OR a BSE ticker (so BSE-only companies are included too).
+        Columns: scrip, isin, nse_symbol, bse_symbol, company_name."""
         return self.query(
-            "SELECT bse_scrip_code, isin, nse_symbol, company_name "
-            "FROM security_master WHERE nse_symbol IS NOT NULL"
+            "SELECT bse_scrip_code, isin, nse_symbol, bse_symbol, company_name "
+            "FROM security_master "
+            "WHERE nse_symbol IS NOT NULL OR bse_symbol IS NOT NULL"
         )
+
+    def industry_map_status(self) -> tuple[int, str | None, str | None]:
+        """Return (row_count, max_updated_at, source) for industry_map — used to
+        honor the multi-day cache of the full stockscans pull. A rebuild wipes +
+        rewrites the table with one source, so MAX(source) is representative."""
+        rows = self.query(
+            "SELECT COUNT(*) AS n, MAX(updated_at) AS last, MAX(source) AS source "
+            "FROM industry_map"
+        )
+        if not rows:
+            return 0, None, None
+        return int(rows[0].get("n") or 0), rows[0].get("last"), rows[0].get("source")
+
+    def industry_map_by_scrip(self) -> dict[str, str]:
+        """Return {bse_scrip_code -> industry} from industry_map, for tagging
+        orders straight from the cached map (no re-pull)."""
+        rows = self.query(
+            "SELECT bse_scrip_code, industry FROM industry_map "
+            "WHERE bse_scrip_code IS NOT NULL AND industry IS NOT NULL"
+        )
+        return {r["bse_scrip_code"]: r["industry"] for r in rows if r.get("bse_scrip_code")}
 
     def all_orders_scrips(self) -> list[dict[str, Any]]:
         """Return (id, bse_scrip_code, company_name) for EVERY order — tagging
@@ -316,19 +344,25 @@ class D1Client:
         return self.query("SELECT id, bse_scrip_code, company_name FROM orders")
 
     def replace_industry_map(
-        self, rows: Sequence[dict[str, Any]], *, batch: int = 400
+        self,
+        rows: Sequence[dict[str, Any]],
+        *,
+        source: str = "stockscans_full",
+        batch: int = 400,
     ) -> int:
         """Rebuild industry_map from scratch (DELETE then batch INSERT).
 
-        The table is fully derived from security_master × the live Stock Scan
-        mapping, so a clean replace avoids stale rows when the mapping changes.
-        Only rows that carry an industry are inserted (industry is NOT NULL).
+        The table is fully derived from security_master × the stockscans mapping,
+        so a clean replace avoids stale rows when the mapping changes. Only rows
+        that carry an industry are inserted (industry is NOT NULL). `source` and
+        updated_at are stamped so the pull can be cached across runs.
         """
         self.query("DELETE FROM industry_map")
         cols = (
             "(bse_scrip_code, isin, nse_symbol, company_name, "
-            "name_normalized, industry)"
+            "name_normalized, industry, source, updated_at)"
         )
+        src = _sql_literal(source)
         written = 0
         for i in range(0, len(rows), batch):
             chunk = rows[i : i + batch]
@@ -345,6 +379,8 @@ class D1Client:
                             _sql_literal(name),
                             _sql_literal(name.lower() if name else None),
                             _sql_literal(r.get("industry")),
+                            src,
+                            "datetime('now')",
                         )
                     )
                     + ")"

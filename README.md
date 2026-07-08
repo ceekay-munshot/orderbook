@@ -204,11 +204,16 @@ so repeat runs don't re-download it. `INGEST_LIMIT` caps how many PDFs per run.
 
 ## Industry tagging (Phase 3)
 
-After enrichment, `main.py` tags every order's `target_industry` from the LIVE
-Stock Scan mapping (fetched fresh each run from the public daksham repo). The
-only path is `order.bse_scrip_code -> security_master.nse_symbol -> Stock Scan
-industry`; anything that doesn't resolve (BSE-only, or a symbol not in the Stock
-Scan list) becomes `'Unclassified'` — industries are never guessed from the
-company name. ALL orders are re-tagged every run, so a change in daksham's
-mapping flows through to existing orders. It also rebuilds `industry_map` (the
-persistent scrip→industry record).
+After enrichment, `main.py` tags every order's `target_industry` from the FULL
+stockscans.in classification (~5,800 companies, ~half BSE-listed) — pulled from
+its public per-company JSON API and cached in `industry_map` for a few days
+(`FORCE_INDUSTRY_REFRESH` to re-pull). Resolution:
+
+    order.bse_scrip_code
+      -> security_master.nse_symbol  -> stockscans "NSE:<symbol>"   (primary)
+      -> security_master.bse_symbol  -> stockscans "BSE:<ticker>"   (BSE-only)
+
+Anything that doesn't resolve becomes `'Unclassified'` — never guessed from the
+name. If the full pull fails it falls back to the daksham live mapping and never
+wipes existing tags. ALL orders are re-tagged from the cached map every run, so a
+refreshed classification flows through to existing orders.

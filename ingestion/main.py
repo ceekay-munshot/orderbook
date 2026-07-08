@@ -28,10 +28,13 @@ Env:
   INGEST_MAX_PAGES (default 60)             -> cap on BSE page fetches per run
   FORCE_MASTER_REBUILD (default off)        -> rebuild the BSE<->NSE<->ISIN
                                               security master now (else weekly)
+  FORCE_INDUSTRY_REFRESH (default off)      -> re-pull the full stockscans
+                                              industry map now (else ~3-day cache)
 
 There is also a phase-0 build of the `security_master` translator (BSE scrip
 code <-> NSE symbol <-> ISIN), the prerequisite for industry tagging. It is
-cached and rebuilt at most weekly, so it is usually a no-op.
+cached and rebuilt at most weekly, so it is usually a no-op. Phase 3 then tags
+each order's industry from the FULL stockscans classification (cached a few days).
 """
 
 from __future__ import annotations
@@ -52,7 +55,15 @@ from d1_client import D1Client, compute_dedup_key
 from firecrawl_client import FirecrawlClient, FirecrawlError
 from openai_client import OpenAIClient, OpenAIError
 from security_master import SecurityMasterError, build_master, verify
-from stockscans import StockScansError, fetch_industry_by_symbol
+from stockscans import (
+    StockScansError,
+    fetch_full_stockscans,
+    fetch_industry_by_symbol,
+)
+
+# The full stockscans pull (5,800+ companies) is cached this many days between
+# refreshes — it's larger than the daksham file, so we don't re-fetch every run.
+INDUSTRY_CACHE_DAYS = 3
 
 # BSE serves each PDF at AttachLive first; older ones move to AttachHis. We fall
 # back to the historical path by swapping the folder in the stored URL.
@@ -510,48 +521,101 @@ def build_security_master_pass(client: D1Client | None, config: Config) -> None:
         print(f"  WRITE FAILED ({exc}); master left unchanged.")
 
 
-def tag_orders_pass(client: D1Client, config: Config) -> None:
-    """Phase 3: tag every order's target_industry from the LIVE Stock Scan map.
+def _build_industry_map_rows(
+    config: Config, sec_rows: list[dict]
+) -> tuple[list[dict] | None, str | None]:
+    """Join security_master with the stockscans classification.
 
-    Chain: order.bse_scrip_code -> security_master.nse_symbol -> Stock Scan
-    industry. Anything that doesn't resolve (BSE-only, or a symbol not in the
-    Stock Scan list) becomes 'Unclassified' — never guessed. ALL orders are
-    re-tagged every run, so when daksham's mapping changes the existing orders
-    update too. Also rebuilds industry_map (the persistent scrip->industry
-    record). Never crashes the run.
+    Tries the FULL stockscans pull first (join on NSE symbol, then BSE ticker),
+    then falls back to the daksham live mapping (NSE symbol only). Returns
+    (map_rows, source) or (None, None) if both sources fail.
     """
-    print("\n" + "=" * 40)
-    print("phase 3: industry tagging (live Stock Scan)")
-    print("=" * 40)
+    # Full pull: keys are EXCHANGE:SYMBOL. Match a company via NSE:<nse_symbol>
+    # first, then BSE:<bse_symbol> (BSE ticker) — the latter classifies BSE-only
+    # companies that have no NSE listing.
+    try:
+        by_id = fetch_full_stockscans(config)
+    except StockScansError as exc:
+        print(f"  full stockscans pull failed ({exc}); falling back to daksham.")
+    else:
+        print(f"  full stockscans: {len(by_id)} companies, "
+              f"{len(set(by_id.values()))} industries")
+        rows = []
+        for r in sec_rows:
+            nsym = (r.get("nse_symbol") or "").upper()
+            bsym = (r.get("bse_symbol") or "").upper()
+            industry = (by_id.get(f"NSE:{nsym}") if nsym else None) or (
+                by_id.get(f"BSE:{bsym}") if bsym else None
+            )
+            if industry:
+                rows.append({**r, "industry": industry})
+        return rows, "stockscans_full"
 
     try:
         sym_to_industry = fetch_industry_by_symbol(config)
     except StockScansError as exc:
-        print(f"  could not fetch Stock Scan mapping ({exc}); industries left as-is.")
-        return
-    print(f"  Stock Scan mapping (live): {len(sym_to_industry)} symbols with an industry")
-
-    try:
-        sec_rows = client.security_master_symbol_rows()
-    except Exception as exc:  # noqa: BLE001
-        print(f"  could not read security_master ({exc}); skipping tagging.")
-        return
-    scrip_to_symbol = {r.get("bse_scrip_code"): r.get("nse_symbol") for r in sec_rows}
-    print(f"  security_master: {len(sec_rows)} companies with an NSE symbol")
-
-    # Rebuild industry_map (classified companies only — industry is NOT NULL).
-    map_rows = []
+        print(f"  daksham fallback also failed ({exc}).")
+        return None, None
+    print(f"  daksham fallback: {len(sym_to_industry)} symbols")
+    rows = []
     for r in sec_rows:
         industry = sym_to_industry.get((r.get("nse_symbol") or "").upper())
         if industry:
-            map_rows.append({**r, "industry": industry})
-    try:
-        n_map = client.replace_industry_map(map_rows)
-        print(f"  industry_map rebuilt: {n_map} classified companies")
-    except Exception as exc:  # noqa: BLE001
-        print(f"  industry_map rebuild failed ({exc}); continuing to tag orders.")
+            rows.append({**r, "industry": industry})
+    return rows, "stockscans_daksham"
 
-    # Re-tag ALL orders.
+
+def refresh_industry_map(client: D1Client, config: Config) -> None:
+    """Rebuild industry_map from security_master × stockscans — but at most once
+    every few days (the full pull is large), unless FORCE_INDUSTRY_REFRESH is set.
+    On any fetch failure the existing map is kept (never wiped)."""
+    force = _bool_env("FORCE_INDUSTRY_REFRESH")
+    try:
+        n_map, last, source = client.industry_map_status()
+    except Exception as exc:  # noqa: BLE001
+        print(f"  industry_map status check failed ({exc}); will rebuild.")
+        n_map, last, source = 0, None, None
+
+    if (
+        n_map > 0
+        and source == "stockscans_full"
+        and _within_days(last, INDUSTRY_CACHE_DAYS)
+        and not force
+    ):
+        print(f"  industry_map: fresh ({n_map} rows, {source}, updated {last}) — "
+              "using cache. Set FORCE_INDUSTRY_REFRESH=1 to re-pull.")
+        return
+
+    reason = "forced" if force else f"stale/{source or 'empty'}"
+    print(f"  refreshing industry map — {reason}")
+    try:
+        sec_rows = client.security_master_symbol_rows()
+    except Exception as exc:  # noqa: BLE001
+        print(f"  could not read security_master ({exc}); keeping existing map.")
+        return
+    print(f"  security_master: {len(sec_rows)} companies with an NSE/BSE symbol")
+
+    map_rows, source_used = _build_industry_map_rows(config, sec_rows)
+    if map_rows is None:
+        print("  both full pull and daksham fallback failed — keeping existing map.")
+        return
+    try:
+        n_written = client.replace_industry_map(map_rows, source=source_used or "stockscans")
+        print(f"  industry_map rebuilt: {n_written} classified companies "
+              f"(source={source_used})")
+    except Exception as exc:  # noqa: BLE001
+        print(f"  industry_map rebuild failed ({exc}); existing map left in place.")
+
+
+def tag_from_industry_map(client: D1Client) -> None:
+    """Re-tag EVERY order's target_industry from the cached industry_map:
+    order.bse_scrip_code -> industry, else 'Unclassified'. Runs every run (cheap)
+    so a refreshed map flows through to existing orders."""
+    try:
+        scrip_to_industry = client.industry_map_by_scrip()
+    except Exception as exc:  # noqa: BLE001
+        print(f"  could not read industry_map ({exc}); skipping tagging.")
+        return
     try:
         orders = client.all_orders_scrips()
     except Exception as exc:  # noqa: BLE001
@@ -564,15 +628,14 @@ def tag_orders_pass(client: D1Client, config: Config) -> None:
     tagged = 0
     for order in orders:
         scrip = order.get("bse_scrip_code")
-        symbol = scrip_to_symbol.get(scrip)
-        industry = sym_to_industry.get((symbol or "").upper()) if symbol else None
+        industry = scrip_to_industry.get(scrip)
         final = industry or "Unclassified"
         id_to_industry[order["id"]] = final
         if industry:
             tagged += 1
             industry_counts[industry] = industry_counts.get(industry, 0) + 1
         if len(examples) < 4:
-            examples.append((order.get("company_name") or "?", symbol or "—", final))
+            examples.append((order.get("company_name") or "?", scrip or "—", final))
 
     try:
         n_upd = client.set_target_industry_bulk(id_to_industry)
@@ -581,17 +644,31 @@ def tag_orders_pass(client: D1Client, config: Config) -> None:
         return
 
     total = len(orders)
-    unclassified = total - tagged
     print(f"\n  tagged {n_upd} orders: {tagged} with a real industry, "
-          f"{unclassified} Unclassified")
+          f"{total - tagged} Unclassified (map has {len(scrip_to_industry)} companies)")
     if industry_counts:
         print("  top industries by order count:")
         for industry, count in sorted(industry_counts.items(), key=lambda x: -x[1])[:5]:
             print(f"    {count:3d}  {industry}")
     if examples:
-        print("  examples (company [symbol] -> industry):")
-        for name, symbol, industry in examples:
-            print(f"    {name[:36]} [{symbol}] -> {industry}")
+        print("  examples (company [scrip] -> industry):")
+        for name, scrip, industry in examples:
+            print(f"    {name[:36]} [{scrip}] -> {industry}")
+
+
+def tag_orders_pass(client: D1Client, config: Config) -> None:
+    """Phase 3: industry tagging from the FULL stockscans classification.
+
+    Chain: order.bse_scrip_code -> security_master (nse_symbol / bse_symbol) ->
+    stockscans industry. Not found -> 'Unclassified' (never guessed). The
+    classification is cached in industry_map for a few days; orders are re-tagged
+    from it every run. Never crashes the run.
+    """
+    print("\n" + "=" * 40)
+    print("phase 3: industry tagging (full stockscans)")
+    print("=" * 40)
+    refresh_industry_map(client, config)
+    tag_from_industry_map(client)
 
 
 def main() -> int:

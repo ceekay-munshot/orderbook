@@ -21,6 +21,11 @@ on:
         required: false
         default: false
         type: boolean
+      force_industry:
+        description: "Force re-pull the FULL stockscans industry map (else ~3-day cache)"
+        required: false
+        default: false
+        type: boolean
   schedule:
     # Every 6 hours (UTC): fetch new orders, read PDFs, re-tag industries.
     - cron: "0 */6 * * *"
@@ -54,6 +59,8 @@ jobs:
           INGEST_LIMIT: ${{ inputs.pdf_limit || '10' }}
           # Force-rebuild the security master (else it refreshes at most weekly)
           FORCE_MASTER_REBUILD: ${{ inputs.force_master || false }}
+          # Force re-pull the full stockscans industry map (else ~3-day cache)
+          FORCE_INDUSTRY_REFRESH: ${{ inputs.force_industry || false }}
           # Proxy + APIs
           SCRAPEDO_API_KEY: ${{ secrets.SCRAPEDO_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}

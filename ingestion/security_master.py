@@ -161,10 +161,14 @@ def build_master(config: Config) -> tuple[list[dict[str, Any]], dict[str, int]]:
             continue
         name = (row.get("Issuer_Name") or row.get("Scrip_Name") or "").strip() or None
         symbol = isin_to_symbol.get(isin) or None
+        # BSE's own ticker (scrip_id), e.g. 500002 -> "ABB". Used to join
+        # BSE-only companies to stockscans, which keys BSE by ticker ("BSE:ABB").
+        bse_symbol = (str(row.get("scrip_id") or "").strip().upper()) or None
         master[scrip] = {
             "bse_scrip_code": scrip,
             "isin": isin,
             "nse_symbol": symbol,
+            "bse_symbol": bse_symbol,
             "company_name": name,
             "source": "bse+nse" if symbol else "bse",
         }
