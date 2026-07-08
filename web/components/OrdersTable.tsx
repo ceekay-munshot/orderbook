@@ -29,12 +29,13 @@ function SourceLink({ url }: { url: string | null }) {
 }
 
 const TH =
-  "px-4 py-3 text-[11px] font-semibold uppercase tracking-wide text-slate-400";
+  "px-3 py-3 text-[11px] font-semibold uppercase tracking-wide text-slate-400";
 
 /**
- * Dense, sortable-looking table view of every order. Clicking a row opens the
- * detail modal; the Source column links straight to the filing PDF. Value and
- * Duration are shown as numbers with units (₹… Cr, N mo), not raw text.
+ * Table view of every order. Everything is centered except the company name;
+ * cells wrap so the whole table fits its container (no horizontal scroll).
+ * Clicking a row opens the detail modal; the Source column links to the PDF.
+ * Value and Duration are shown as numbers with units (₹… Cr, N mo) only.
  */
 export function OrdersTable({
   orders,
@@ -45,68 +46,67 @@ export function OrdersTable({
 }) {
   return (
     <div className="overflow-hidden rounded-2xl border border-slate-200/70 bg-white/80 shadow-[var(--shadow-card)] backdrop-blur-sm">
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[860px] border-collapse text-left text-sm">
-          <thead>
-            <tr className="border-b border-slate-200/70">
-              <th className={TH}>Company</th>
-              <th className={TH}>Date</th>
-              <th className={`${TH} text-right`}>Order value</th>
-              <th className={TH}>Awarder</th>
-              <th className={`${TH} text-right`}>Duration</th>
-              <th className={TH}>Target industry</th>
-              <th className={`${TH} text-center`}>Source</th>
-            </tr>
-          </thead>
-          <tbody>
-            {orders.map((order) => {
-              const accent = accentForId(order.id);
-              const classified =
-                order.targetIndustry &&
-                order.targetIndustry !== "Unclassified";
-              return (
-                <tr
-                  key={order.id}
-                  onClick={() => onSelect(order)}
-                  className="cursor-pointer border-b border-slate-100 transition last:border-0 hover:bg-slate-50/80"
-                >
-                  <td className="px-4 py-3">
-                    <div className="font-medium text-slate-900">
-                      {order.companyName}
-                    </div>
-                    <div className="mt-0.5 text-xs text-slate-400">
-                      {order.bseScripCode ? `BSE ${order.bseScripCode}` : ""}
-                      {order.nseSymbol ? ` · NSE ${order.nseSymbol}` : ""}
-                    </div>
-                  </td>
-                  <td className="whitespace-nowrap px-4 py-3 text-slate-500">
-                    {formatDate(order.filedAt)}
-                  </td>
-                  <td className="whitespace-nowrap px-4 py-3 text-right font-semibold tabular-nums text-slate-900">
-                    {formatValue(order)}
-                  </td>
-                  <td className="max-w-[15rem] truncate px-4 py-3 text-slate-600">
-                    {order.awarder ?? "—"}
-                  </td>
-                  <td className="whitespace-nowrap px-4 py-3 text-right tabular-nums text-slate-600">
-                    {formatDuration(order)}
-                  </td>
-                  <td className="px-4 py-3">
-                    {classified ? (
-                      <Badge color={accent}>{order.targetIndustry}</Badge>
-                    ) : (
-                      <span className="text-slate-400">Unclassified</span>
-                    )}
-                  </td>
-                  <td className="px-4 py-3 text-center">
-                    <SourceLink url={order.attachmentUrl} />
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+      <table className="w-full border-collapse text-sm">
+        <thead>
+          <tr className="border-b border-slate-200/70">
+            <th className={`${TH} text-left`}>Company</th>
+            <th className={`${TH} text-center`}>Date</th>
+            <th className={`${TH} text-center`}>Order value</th>
+            <th className={`${TH} text-center`}>Awarder</th>
+            <th className={`${TH} text-center`}>Duration</th>
+            <th className={`${TH} text-center`}>Target industry</th>
+            <th className={`${TH} text-center`}>Source</th>
+          </tr>
+        </thead>
+        <tbody>
+          {orders.map((order) => {
+            const accent = accentForId(order.id);
+            const classified =
+              order.targetIndustry && order.targetIndustry !== "Unclassified";
+            return (
+              <tr
+                key={order.id}
+                onClick={() => onSelect(order)}
+                className="cursor-pointer border-b border-slate-100 align-middle transition last:border-0 hover:bg-slate-50/80"
+              >
+                <td className="px-3 py-3 text-left">
+                  <div className="font-medium leading-snug text-slate-900">
+                    {order.companyName}
+                  </div>
+                  <div className="mt-0.5 text-xs text-slate-400">
+                    {order.bseScripCode ? `BSE ${order.bseScripCode}` : ""}
+                    {order.nseSymbol ? ` · NSE ${order.nseSymbol}` : ""}
+                  </div>
+                </td>
+                <td className="px-3 py-3 text-center text-slate-500">
+                  {formatDate(order.filedAt)}
+                </td>
+                <td className="px-3 py-3 text-center font-semibold tabular-nums text-slate-900">
+                  {formatValue(order)}
+                </td>
+                <td className="px-3 py-3 text-center text-slate-600">
+                  {order.awarder ?? "—"}
+                </td>
+                <td className="px-3 py-3 text-center tabular-nums text-slate-600">
+                  {formatDuration(order)}
+                </td>
+                <td className="px-3 py-3 text-center">
+                  {classified ? (
+                    <Badge color={accent} className="whitespace-normal">
+                      {order.targetIndustry}
+                    </Badge>
+                  ) : (
+                    <span className="text-slate-400">Unclassified</span>
+                  )}
+                </td>
+                <td className="px-3 py-3 text-center">
+                  <SourceLink url={order.attachmentUrl} />
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }

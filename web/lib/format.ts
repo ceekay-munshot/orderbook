@@ -14,10 +14,11 @@ export function formatDate(iso: string | null): string {
 }
 
 /**
- * Order value as a NUMBER with its currency unit — never the raw text.
+ * Order value as JUST a number + its unit — never descriptive text.
  * INR orders show as "₹<n> Cr" (more decimals for sub-crore amounts so they
- * don't collapse to ₹0). When we deliberately did NOT convert (a foreign
- * currency like USD/AED), we show that raw phrase, which is already number+unit.
+ * don't collapse to ₹0). For a foreign amount we didn't convert (USD/AED/…),
+ * we keep only the leading "<currency> <number>", dropping qualifiers like
+ * ", exclusive of taxes" or "(US Dollars …)".
  */
 export function formatValue(order: Order): string {
   const cr = order.orderValueCrore;
@@ -25,12 +26,11 @@ export function formatValue(order: Order): string {
     const digits = cr >= 1 ? 2 : 4;
     return `₹${cr.toLocaleString("en-IN", { maximumFractionDigits: digits })} Cr`;
   }
-  return order.orderValueText ?? "—";
-}
-
-/** True when the value shown is a real converted crore number (vs a raw phrase). */
-export function hasCroreValue(order: Order): boolean {
-  return order.orderValueCrore != null;
+  const text = order.orderValueText;
+  if (!text) return "—";
+  // Split at the first clause boundary — ", <word>" (not a thousands comma) or
+  // an opening paren — and keep the leading amount.
+  return text.split(/,\s+|\s*\(/)[0].trim();
 }
 
 /** Duration as a number + unit (months). "—" when no month count was parsed. */

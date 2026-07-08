@@ -4,12 +4,7 @@ import { useEffect } from "react";
 import type { Order } from "@/lib/orders";
 import { accentClasses, accentForId } from "@/lib/accents";
 import { Badge } from "./Badge";
-import {
-  formatDate,
-  formatValue,
-  formatDurationLong,
-  hasCroreValue,
-} from "@/lib/format";
+import { formatDate, formatValue, formatDurationLong } from "@/lib/format";
 
 function Detail({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -38,10 +33,6 @@ export function OrderModal({
 }) {
   const accent = accentForId(order.id);
   const c = accentClasses[accent];
-  const confidencePct =
-    order.extractionConfidence != null
-      ? Math.round(order.extractionConfidence * 100)
-      : null;
   const classified =
     order.targetIndustry && order.targetIndustry !== "Unclassified";
 
@@ -111,7 +102,7 @@ export function OrderModal({
 
         {/* Scrollable body */}
         <div className="flex-1 space-y-5 overflow-y-auto px-6 py-5">
-          {/* Value + duration hero */}
+          {/* Value + duration hero — number + unit only */}
           <div className="grid grid-cols-2 gap-3">
             <div className={`rounded-2xl ${c.soft} px-4 py-3`}>
               <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
@@ -120,24 +111,16 @@ export function OrderModal({
               <p className={`mt-0.5 text-2xl font-bold tracking-tight ${c.text}`}>
                 {formatValue(order)}
               </p>
-              {hasCroreValue(order) && order.orderValueText && (
-                <p className="mt-0.5 truncate text-xs text-slate-400">
-                  from “{order.orderValueText}”
-                </p>
-              )}
             </div>
             <div className="rounded-2xl bg-slate-50 px-4 py-3">
               <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
                 Duration
               </p>
               <p className="mt-0.5 text-2xl font-bold tracking-tight text-slate-800">
-                {formatDurationLong(order)}
+                {order.durationMonths != null
+                  ? formatDurationLong(order)
+                  : order.durationText ?? "—"}
               </p>
-              {order.durationText && (
-                <p className="mt-0.5 truncate text-xs text-slate-400">
-                  “{order.durationText}”
-                </p>
-              )}
             </div>
           </div>
 
@@ -170,35 +153,6 @@ export function OrderModal({
             </div>
           )}
 
-          {/* Verification & evidence */}
-          <div className="rounded-2xl border border-slate-100 bg-slate-50/60 px-4 py-3">
-            <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
-              Verification &amp; evidence
-            </p>
-            <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
-              {order.sourceLabel && <span>{order.sourceLabel}</span>}
-              {order.extractionModel && (
-                <span>· read by {order.extractionModel}</span>
-              )}
-              {order.bseAnnouncementId && (
-                <span>· filing #{order.bseAnnouncementId}</span>
-              )}
-            </div>
-            {confidencePct != null && (
-              <div className="mt-3">
-                <div className="flex items-center justify-between text-[11px] text-slate-400">
-                  <span>Extraction confidence</span>
-                  <span>{confidencePct}%</span>
-                </div>
-                <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-slate-200">
-                  <div
-                    className={`h-full rounded-full ${c.solid}`}
-                    style={{ width: `${confidencePct}%` }}
-                  />
-                </div>
-              </div>
-            )}
-          </div>
         </div>
 
         {/* Footer actions */}

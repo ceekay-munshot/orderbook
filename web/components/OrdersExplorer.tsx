@@ -41,7 +41,7 @@ function ToggleButton({
  * on the server and passed in.
  */
 export function OrdersExplorer({ orders }: { orders: Order[] }) {
-  const [view, setView] = useState<View>("cards");
+  const [view, setView] = useState<View>("table");
   const [selected, setSelected] = useState<Order | null>(null);
 
   return (
