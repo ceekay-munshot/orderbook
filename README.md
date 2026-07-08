@@ -61,6 +61,7 @@ orderbook/
 │   ├── d1_client.py          # Runs SQL against Cloudflare D1 via its HTTP API
 │   ├── bse_client.py         # Reads BSE order announcements + value/duration parse
 │   ├── security_master.py    # BSE scrip <-> NSE symbol <-> ISIN translator
+│   ├── stockscans.py         # live Stock Scan (daksham) industry mapping
 │   ├── firecrawl_client.py   # Fetches + parses BSE pages / order PDFs
 │   ├── scrapedo_client.py    # STUB: proxied fetch for BSE (fallback, TODO)
 │   ├── openai_client.py      # Extracts value/duration/awarder from PDF text
@@ -200,3 +201,14 @@ to text server-side, `AttachLive` with an `AttachHis` fallback), asks OpenAI to
 pull *only* the missing fields as verbatim phrases, normalizes them to
 crore/months in code, stores the PDF text as evidence, and marks `pdf_checked`
 so repeat runs don't re-download it. `INGEST_LIMIT` caps how many PDFs per run.
+
+## Industry tagging (Phase 3)
+
+After enrichment, `main.py` tags every order's `target_industry` from the LIVE
+Stock Scan mapping (fetched fresh each run from the public daksham repo). The
+only path is `order.bse_scrip_code -> security_master.nse_symbol -> Stock Scan
+industry`; anything that doesn't resolve (BSE-only, or a symbol not in the Stock
+Scan list) becomes `'Unclassified'` — industries are never guessed from the
+company name. ALL orders are re-tagged every run, so a change in daksham's
+mapping flows through to existing orders. It also rebuilds `industry_map` (the
+persistent scrip→industry record).

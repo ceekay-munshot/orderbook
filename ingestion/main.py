@@ -52,6 +52,7 @@ from d1_client import D1Client, compute_dedup_key
 from firecrawl_client import FirecrawlClient, FirecrawlError
 from openai_client import OpenAIClient, OpenAIError
 from security_master import SecurityMasterError, build_master, verify
+from stockscans import StockScansError, fetch_industry_by_symbol
 
 # BSE serves each PDF at AttachLive first; older ones move to AttachHis. We fall
 # back to the historical path by swapping the folder in the stored URL.
@@ -509,6 +510,90 @@ def build_security_master_pass(client: D1Client | None, config: Config) -> None:
         print(f"  WRITE FAILED ({exc}); master left unchanged.")
 
 
+def tag_orders_pass(client: D1Client, config: Config) -> None:
+    """Phase 3: tag every order's target_industry from the LIVE Stock Scan map.
+
+    Chain: order.bse_scrip_code -> security_master.nse_symbol -> Stock Scan
+    industry. Anything that doesn't resolve (BSE-only, or a symbol not in the
+    Stock Scan list) becomes 'Unclassified' — never guessed. ALL orders are
+    re-tagged every run, so when daksham's mapping changes the existing orders
+    update too. Also rebuilds industry_map (the persistent scrip->industry
+    record). Never crashes the run.
+    """
+    print("\n" + "=" * 40)
+    print("phase 3: industry tagging (live Stock Scan)")
+    print("=" * 40)
+
+    try:
+        sym_to_industry = fetch_industry_by_symbol(config)
+    except StockScansError as exc:
+        print(f"  could not fetch Stock Scan mapping ({exc}); industries left as-is.")
+        return
+    print(f"  Stock Scan mapping (live): {len(sym_to_industry)} symbols with an industry")
+
+    try:
+        sec_rows = client.security_master_symbol_rows()
+    except Exception as exc:  # noqa: BLE001
+        print(f"  could not read security_master ({exc}); skipping tagging.")
+        return
+    scrip_to_symbol = {r.get("bse_scrip_code"): r.get("nse_symbol") for r in sec_rows}
+    print(f"  security_master: {len(sec_rows)} companies with an NSE symbol")
+
+    # Rebuild industry_map (classified companies only — industry is NOT NULL).
+    map_rows = []
+    for r in sec_rows:
+        industry = sym_to_industry.get((r.get("nse_symbol") or "").upper())
+        if industry:
+            map_rows.append({**r, "industry": industry})
+    try:
+        n_map = client.replace_industry_map(map_rows)
+        print(f"  industry_map rebuilt: {n_map} classified companies")
+    except Exception as exc:  # noqa: BLE001
+        print(f"  industry_map rebuild failed ({exc}); continuing to tag orders.")
+
+    # Re-tag ALL orders.
+    try:
+        orders = client.all_orders_scrips()
+    except Exception as exc:  # noqa: BLE001
+        print(f"  could not read orders ({exc}); skipping tagging.")
+        return
+
+    id_to_industry: dict[Any, str] = {}
+    industry_counts: dict[str, int] = {}
+    examples: list[tuple[str, str, str]] = []
+    tagged = 0
+    for order in orders:
+        scrip = order.get("bse_scrip_code")
+        symbol = scrip_to_symbol.get(scrip)
+        industry = sym_to_industry.get((symbol or "").upper()) if symbol else None
+        final = industry or "Unclassified"
+        id_to_industry[order["id"]] = final
+        if industry:
+            tagged += 1
+            industry_counts[industry] = industry_counts.get(industry, 0) + 1
+        if len(examples) < 4:
+            examples.append((order.get("company_name") or "?", symbol or "—", final))
+
+    try:
+        n_upd = client.set_target_industry_bulk(id_to_industry)
+    except Exception as exc:  # noqa: BLE001
+        print(f"  tagging update failed ({exc}).")
+        return
+
+    total = len(orders)
+    unclassified = total - tagged
+    print(f"\n  tagged {n_upd} orders: {tagged} with a real industry, "
+          f"{unclassified} Unclassified")
+    if industry_counts:
+        print("  top industries by order count:")
+        for industry, count in sorted(industry_counts.items(), key=lambda x: -x[1])[:5]:
+            print(f"    {count:3d}  {industry}")
+    if examples:
+        print("  examples (company [symbol] -> industry):")
+        for name, symbol, industry in examples:
+            print(f"    {name[:36]} [{symbol}] -> {industry}")
+
+
 def main() -> int:
     config = Config.from_env()
     from_date, to_date = resolve_date_range()
@@ -536,6 +621,10 @@ def main() -> int:
     if writing and client is not None:
         renormalize_pass(client)  # free: recover numbers from stored phrases
         enrich_pass(client, config, _int_env("INGEST_LIMIT", 10))
+
+    # Phase 3 — tag every order's industry from the live Stock Scan mapping.
+    if writing and client is not None:
+        tag_orders_pass(client, config)
 
     return 0
 

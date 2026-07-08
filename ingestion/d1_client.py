@@ -302,6 +302,79 @@ class D1Client:
             written += len(chunk)
         return written
 
+    def security_master_symbol_rows(self) -> list[dict[str, Any]]:
+        """Return security_master rows that HAVE an NSE symbol (scrip, isin,
+        nse_symbol, company_name) — the ones that can carry an industry."""
+        return self.query(
+            "SELECT bse_scrip_code, isin, nse_symbol, company_name "
+            "FROM security_master WHERE nse_symbol IS NOT NULL"
+        )
+
+    def all_orders_scrips(self) -> list[dict[str, Any]]:
+        """Return (id, bse_scrip_code, company_name) for EVERY order — tagging
+        re-runs over all orders so a changed mapping updates existing rows too."""
+        return self.query("SELECT id, bse_scrip_code, company_name FROM orders")
+
+    def replace_industry_map(
+        self, rows: Sequence[dict[str, Any]], *, batch: int = 400
+    ) -> int:
+        """Rebuild industry_map from scratch (DELETE then batch INSERT).
+
+        The table is fully derived from security_master × the live Stock Scan
+        mapping, so a clean replace avoids stale rows when the mapping changes.
+        Only rows that carry an industry are inserted (industry is NOT NULL).
+        """
+        self.query("DELETE FROM industry_map")
+        cols = (
+            "(bse_scrip_code, isin, nse_symbol, company_name, "
+            "name_normalized, industry)"
+        )
+        written = 0
+        for i in range(0, len(rows), batch):
+            chunk = rows[i : i + batch]
+            tuples = []
+            for r in chunk:
+                name = r.get("company_name")
+                tuples.append(
+                    "("
+                    + ", ".join(
+                        (
+                            _sql_literal(r.get("bse_scrip_code")),
+                            _sql_literal(r.get("isin")),
+                            _sql_literal(r.get("nse_symbol")),
+                            _sql_literal(name),
+                            _sql_literal(name.lower() if name else None),
+                            _sql_literal(r.get("industry")),
+                        )
+                    )
+                    + ")"
+                )
+            self.query(f"INSERT INTO industry_map {cols} VALUES " + ", ".join(tuples))
+            written += len(chunk)
+        return written
+
+    def set_target_industry_bulk(self, id_to_industry: dict[Any, str]) -> int:
+        """Set orders.target_industry for many orders efficiently.
+
+        Groups order ids by their (identical) industry value and issues one
+        UPDATE per distinct industry — a handful of statements instead of one
+        per order. Ids are ints (coerced), industry is escaped, so it is safe.
+        """
+        groups: dict[str, list[int]] = {}
+        for order_id, industry in id_to_industry.items():
+            groups.setdefault(industry, []).append(int(order_id))
+        updated = 0
+        for industry, ids in groups.items():
+            for i in range(0, len(ids), 500):
+                chunk = ids[i : i + 500]
+                id_list = ", ".join(str(x) for x in chunk)
+                self.query(
+                    f"UPDATE orders SET target_industry = {_sql_literal(industry)}, "
+                    f"updated_at = datetime('now') WHERE id IN ({id_list})"
+                )
+                updated += len(chunk)
+        return updated
+
     def orders_with_unparsed_text(self) -> list[dict[str, Any]]:
         """Return orders that have a value/duration *phrase* stored but no parsed
         number yet — candidates for a free re-normalize (no API calls).

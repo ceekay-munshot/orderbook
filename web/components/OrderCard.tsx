@@ -100,10 +100,10 @@ export function OrderCard({
           <Field label="Awarder">{order.awarder ?? "—"}</Field>
           <Field label="Duration">{order.durationText ?? "—"}</Field>
           <Field label="Target industry">
-            {order.targetIndustry ? (
+            {order.targetIndustry && order.targetIndustry !== "Unclassified" ? (
               <Badge color={accent}>{order.targetIndustry}</Badge>
             ) : (
-              <span className="text-slate-400">Uncategorized</span>
+              <span className="text-slate-400">Unclassified</span>
             )}
           </Field>
           <Field label="Category">{order.category ?? "—"}</Field>
