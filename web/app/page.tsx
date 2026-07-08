@@ -59,7 +59,7 @@ function formatCrore(total: number): string {
 }
 
 export default async function Home() {
-  const orders = await getOrders();
+  const { orders, isLive } = await getOrders();
 
   // KPI row derived from the real (or fallback) orders.
   const totalCrore = orders.reduce((sum, o) => sum + (o.orderValueCrore ?? 0), 0);
@@ -93,8 +93,8 @@ export default async function Home() {
               </p>
             </div>
           </div>
-          <Badge color="emerald" withDot>
-            Demo data
+          <Badge color={isLive ? "emerald" : "amber"} withDot>
+            {isLive ? "Live" : "Demo data"}
           </Badge>
         </div>
       </header>

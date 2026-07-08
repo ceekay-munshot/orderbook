@@ -140,30 +140,37 @@ function mapRow(r: OrderRow): Order {
   };
 }
 
+/** Result of {@link getOrders}: the rows plus whether they came from live D1
+ * (true) or the demo fallback (false), so the UI can label the source honestly. */
+export interface OrdersResult {
+  orders: Order[];
+  isLive: boolean;
+}
+
 /**
  * Read all orders from Cloudflare D1 (via the `DB` binding), newest first.
  *
  * Falls back to demo mock data ONLY when the binding isn't available (e.g.
  * plain `next dev` with no Cloudflare context, or a build-time context where
  * `getCloudflareContext()` throws) — so the app always renders. A reachable but
- * empty table returns `[]` (the page shows a clean empty state), NOT the mock.
+ * empty table returns `[]` with `isLive: true` (clean empty state), NOT the mock.
  */
-export async function getOrders(): Promise<Order[]> {
+export async function getOrders(): Promise<OrdersResult> {
   try {
     const { env } = await getCloudflareContext({ async: true });
     const db = (env as { DB?: D1DatabaseLike }).DB;
-    if (!db) return mockOrders;
+    if (!db) return { orders: mockOrders, isLive: false };
     const { results } = await db
       .prepare(
         `SELECT ${SELECT_COLUMNS} FROM orders ORDER BY filed_at DESC, id DESC`,
       )
       .all<OrderRow>();
-    return results.map(mapRow);
+    return { orders: results.map(mapRow), isLive: true };
   } catch (err) {
     console.warn(
       "[orders] D1 binding unavailable — falling back to demo data.",
       err,
     );
-    return mockOrders;
+    return { orders: mockOrders, isLive: false };
   }
 }

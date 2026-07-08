@@ -3,6 +3,7 @@
 import { useState } from "react";
 import type { Order } from "@/lib/orders";
 import { accentForId } from "@/lib/accents";
+import { exportOrdersToExcel } from "@/lib/excel";
 import { Badge } from "./Badge";
 import { OrderCard } from "./OrderCard";
 import { OrdersTable } from "./OrdersTable";
@@ -55,7 +56,26 @@ export function OrdersExplorer({ orders }: { orders: Order[] }) {
             Newest first · across all tracked companies
           </p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2.5">
+          <button
+            onClick={() =>
+              exportOrdersToExcel(
+                orders,
+                `orderbook-orders-${new Date().toISOString().slice(0, 10)}.xls`,
+              )
+            }
+            className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700"
+          >
+            <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden>
+              <path
+                fillRule="evenodd"
+                d="M10 3a1 1 0 011 1v6.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 111.414-1.414L9 10.586V4a1 1 0 011-1z"
+                clipRule="evenodd"
+              />
+              <path d="M4 14a1 1 0 011 1v1h10v-1a1 1 0 112 0v2a1 1 0 01-1 1H4a1 1 0 01-1-1v-2a1 1 0 011-1z" />
+            </svg>
+            Export to Excel
+          </button>
           <div className="inline-flex rounded-xl border border-slate-200 bg-white/70 p-0.5 shadow-sm backdrop-blur">
             <ToggleButton active={view === "cards"} onClick={() => setView("cards")}>
               <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden>

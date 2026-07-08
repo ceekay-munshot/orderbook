@@ -36,6 +36,17 @@ export function accentForId(id: number): AccentColor {
   return ACCENT_CYCLE[Math.abs(id) % ACCENT_CYCLE.length];
 }
 
+/** Concrete hex per accent, for places that need a literal color (inline styles,
+ * the table's per-row accent bar, the Excel export). */
+export const accentHex: Record<AccentColor, string> = {
+  indigo: "#6366f1",
+  emerald: "#10b981",
+  amber: "#f59e0b",
+  rose: "#f43f5e",
+  violet: "#8b5cf6",
+  sky: "#0ea5e9",
+};
+
 export const accentClasses: Record<AccentColor, AccentClasses> = {
   indigo: {
     soft: "bg-indigo-50",

@@ -1,5 +1,5 @@
 import type { Order } from "@/lib/orders";
-import { accentForId } from "@/lib/accents";
+import { accentForId, accentHex } from "@/lib/accents";
 import { Badge } from "./Badge";
 import { formatDate, formatValue, formatDuration } from "@/lib/format";
 
@@ -15,7 +15,7 @@ function SourceLink({ url }: { url: string | null }) {
       onClick={(e) => e.stopPropagation()}
       title="Open source filing (PDF)"
       aria-label="Open source filing (PDF)"
-      className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition hover:bg-brand-50 hover:text-brand-600"
+      className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-brand-500 transition hover:bg-brand-100 hover:text-brand-700"
     >
       <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden>
         <path
@@ -29,13 +29,15 @@ function SourceLink({ url }: { url: string | null }) {
 }
 
 const TH =
-  "px-3 py-3 text-[11px] font-semibold uppercase tracking-wide text-slate-400";
+  "px-3 py-3 text-[11px] font-bold uppercase tracking-wider text-white first:rounded-tl-2xl last:rounded-tr-2xl";
+/** Vertical divider between body cells (skips the first cell). */
+const TD = "px-3 py-3 border-l border-slate-100 first:border-l-0";
 
 /**
- * Table view of every order. Everything is centered except the company name;
- * cells wrap so the whole table fits its container (no horizontal scroll).
+ * Colorful table view of every order. Gradient header, a per-row accent bar,
+ * zebra striping, cell borders. Everything is centered except the left-aligned
+ * company name; cells wrap so the whole table fits (no horizontal scroll).
  * Clicking a row opens the detail modal; the Source column links to the PDF.
- * Value and Duration are shown as numbers with units (₹… Cr, N mo) only.
  */
 export function OrdersTable({
   orders,
@@ -45,10 +47,12 @@ export function OrdersTable({
   onSelect: (order: Order) => void;
 }) {
   return (
-    <div className="overflow-hidden rounded-2xl border border-slate-200/70 bg-white/80 shadow-[var(--shadow-card)] backdrop-blur-sm">
+    <div className="overflow-hidden rounded-2xl border border-slate-200/70 shadow-[var(--shadow-card)]">
       <table className="w-full border-collapse text-sm">
         <thead>
-          <tr className="border-b border-slate-200/70">
+          <tr
+            style={{ backgroundImage: "linear-gradient(120deg,#6366f1 0%,#8b5cf6 55%,#0ea5e9 100%)" }}
+          >
             <th className={`${TH} text-left`}>Company</th>
             <th className={`${TH} text-center`}>Date</th>
             <th className={`${TH} text-center`}>Order value</th>
@@ -59,7 +63,7 @@ export function OrdersTable({
           </tr>
         </thead>
         <tbody>
-          {orders.map((order) => {
+          {orders.map((order, i) => {
             const accent = accentForId(order.id);
             const classified =
               order.targetIndustry && order.targetIndustry !== "Unclassified";
@@ -67,10 +71,14 @@ export function OrdersTable({
               <tr
                 key={order.id}
                 onClick={() => onSelect(order)}
-                className="cursor-pointer border-b border-slate-100 align-middle transition last:border-0 hover:bg-slate-50/80"
+                style={{ borderLeft: `4px solid ${accentHex[accent]}` }}
+                className={
+                  "cursor-pointer border-b border-slate-200/70 align-middle transition last:border-b-0 hover:bg-brand-50/60 " +
+                  (i % 2 ? "bg-slate-50/50" : "bg-white/80")
+                }
               >
-                <td className="px-3 py-3 text-left">
-                  <div className="font-medium leading-snug text-slate-900">
+                <td className={`${TD} text-left`}>
+                  <div className="font-semibold leading-snug text-slate-900">
                     {order.companyName}
                   </div>
                   <div className="mt-0.5 text-xs text-slate-400">
@@ -78,19 +86,19 @@ export function OrdersTable({
                     {order.nseSymbol ? ` · NSE ${order.nseSymbol}` : ""}
                   </div>
                 </td>
-                <td className="px-3 py-3 text-center text-slate-500">
+                <td className={`${TD} text-center whitespace-nowrap text-slate-500`}>
                   {formatDate(order.filedAt)}
                 </td>
-                <td className="px-3 py-3 text-center font-semibold tabular-nums text-slate-900">
+                <td className={`${TD} text-center font-bold tabular-nums text-emerald-700`}>
                   {formatValue(order)}
                 </td>
-                <td className="px-3 py-3 text-center text-slate-600">
+                <td className={`${TD} text-center text-slate-600`}>
                   {order.awarder ?? "—"}
                 </td>
-                <td className="px-3 py-3 text-center tabular-nums text-slate-600">
+                <td className={`${TD} text-center tabular-nums text-slate-600`}>
                   {formatDuration(order)}
                 </td>
-                <td className="px-3 py-3 text-center">
+                <td className={`${TD} text-center`}>
                   {classified ? (
                     <Badge color={accent} className="whitespace-normal">
                       {order.targetIndustry}
@@ -99,7 +107,7 @@ export function OrdersTable({
                     <span className="text-slate-400">Unclassified</span>
                   )}
                 </td>
-                <td className="px-3 py-3 text-center">
+                <td className={`${TD} text-center`}>
                   <SourceLink url={order.attachmentUrl} />
                 </td>
               </tr>
