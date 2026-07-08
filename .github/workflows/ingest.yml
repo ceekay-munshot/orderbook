@@ -15,6 +15,11 @@ on:
         required: false
         default: "5"
         type: string
+      force_master:
+        description: "Force-rebuild the BSE<->NSE<->ISIN security master (else weekly cache)"
+        required: false
+        default: false
+        type: boolean
   # schedule:
   #   # Every 6 hours (UTC). Enable once real ingestion is in place.
   #   - cron: "0 */6 * * *"
@@ -46,6 +51,8 @@ jobs:
           INGEST_DAYS: ${{ inputs.days }}
           # PDF-enrichment cap per run (from the "pdf_limit" input; defaults to 5)
           INGEST_LIMIT: ${{ inputs.pdf_limit }}
+          # Force-rebuild the security master (else it refreshes at most weekly)
+          FORCE_MASTER_REBUILD: ${{ inputs.force_master }}
           # Proxy + APIs
           SCRAPEDO_API_KEY: ${{ secrets.SCRAPEDO_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}

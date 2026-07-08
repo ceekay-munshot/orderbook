@@ -26,6 +26,20 @@ class D1Error(RuntimeError):
     """Raised when the D1 API returns an error or a non-2xx response."""
 
 
+def _sql_literal(value: Any) -> str:
+    """Render a value as a safe SQLite string literal (or NULL).
+
+    Single quotes are doubled per the SQL standard (SQLite has no backslash
+    escapes), and control characters are dropped. Used for bulk inserts where
+    inlining beats thousands of parameterized round-trips.
+    """
+    if value is None:
+        return "NULL"
+    text = str(value).replace("'", "''")
+    text = "".join(ch for ch in text if ch >= " " or ch == "\t")
+    return "'" + text + "'"
+
+
 # Columns written by upsert_order(), in bind order. Excludes auto-managed
 # columns: id, created_at, updated_at.
 ORDER_COLUMNS: tuple[str, ...] = (
@@ -228,6 +242,65 @@ class D1Client:
             "ORDER BY filed_at DESC LIMIT ?"
         )
         return self.query(sql, [int(limit)])
+
+    def security_master_status(self) -> tuple[int, str | None]:
+        """Return (row_count, max_updated_at) for security_master.
+
+        Used to honor the weekly-rebuild cache — if the table is fresh we skip
+        re-fetching the source lists. Returns (0, None) when empty/missing.
+        """
+        rows = self.query(
+            "SELECT COUNT(*) AS n, MAX(updated_at) AS last FROM security_master"
+        )
+        if not rows:
+            return 0, None
+        return int(rows[0].get("n") or 0), rows[0].get("last")
+
+    def upsert_security_master(
+        self,
+        rows: Sequence[dict[str, Any]],
+        *,
+        batch: int = 400,
+    ) -> int:
+        """Bulk-upsert translator rows into security_master, keyed by scrip code.
+
+        Values are inlined as escaped SQL literals (single quotes doubled) so a
+        whole batch of rows goes in ONE statement — thousands of rows would be
+        far too many round-trips one at a time. The data comes from BSE/NSE
+        official lists, and every string is escaped, so this is injection-safe.
+        Returns the number of rows written.
+        """
+        cols = "(bse_scrip_code, isin, nse_symbol, company_name, source, updated_at)"
+        written = 0
+        for i in range(0, len(rows), batch):
+            chunk = rows[i : i + batch]
+            tuples = []
+            for r in chunk:
+                tuples.append(
+                    "("
+                    + ", ".join(
+                        (
+                            _sql_literal(r.get("bse_scrip_code")),
+                            _sql_literal(r.get("isin")),
+                            _sql_literal(r.get("nse_symbol")),
+                            _sql_literal(r.get("company_name")),
+                            _sql_literal(r.get("source")),
+                            "datetime('now')",
+                        )
+                    )
+                    + ")"
+                )
+            sql = (
+                f"INSERT INTO security_master {cols} VALUES "
+                + ", ".join(tuples)
+                + " ON CONFLICT(bse_scrip_code) DO UPDATE SET "
+                "isin = excluded.isin, nse_symbol = excluded.nse_symbol, "
+                "company_name = excluded.company_name, source = excluded.source, "
+                "updated_at = datetime('now')"
+            )
+            self.query(sql)
+            written += len(chunk)
+        return written
 
     def orders_with_unparsed_text(self) -> list[dict[str, Any]]:
         """Return orders that have a value/duration *phrase* stored but no parsed

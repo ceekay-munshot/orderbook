@@ -60,6 +60,7 @@ orderbook/
 │   ├── config.py             # Loads env vars / GitHub Secrets (never logs values)
 │   ├── d1_client.py          # Runs SQL against Cloudflare D1 via its HTTP API
 │   ├── bse_client.py         # Reads BSE order announcements + value/duration parse
+│   ├── security_master.py    # BSE scrip <-> NSE symbol <-> ISIN translator
 │   ├── firecrawl_client.py   # Fetches + parses BSE pages / order PDFs
 │   ├── scrapedo_client.py    # STUB: proxied fetch for BSE (fallback, TODO)
 │   ├── openai_client.py      # Extracts value/duration/awarder from PDF text
@@ -67,7 +68,8 @@ orderbook/
 ├── db/
 │   ├── migrations/
 │   │   ├── 0001_init.sql     # orders + industry_map schema
-│   │   └── 0002_pdf_checked.sql  # pdf_checked flag for the enrichment pass
+│   │   ├── 0002_pdf_checked.sql       # pdf_checked flag for the enrichment pass
+│   │   └── 0003_security_master.sql   # BSE<->NSE<->ISIN translator table
 │   └── README.md
 ├── .github/workflows/
 │   └── ingest.yml            # Manual (workflow_dispatch) run of the pipeline

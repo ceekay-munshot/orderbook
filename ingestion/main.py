@@ -26,6 +26,12 @@ Env:
   INGEST_FROM_DATE / INGEST_TO_DATE (YYYY-MM-DD, optional) -> explicit overrides
   INGEST_LIMIT (default 10)                 -> max PDFs to enrich per run (cost cap)
   INGEST_MAX_PAGES (default 60)             -> cap on BSE page fetches per run
+  FORCE_MASTER_REBUILD (default off)        -> rebuild the BSE<->NSE<->ISIN
+                                              security master now (else weekly)
+
+There is also a phase-0 build of the `security_master` translator (BSE scrip
+code <-> NSE symbol <-> ISIN), the prerequisite for industry tagging. It is
+cached and rebuilt at most weekly, so it is usually a no-op.
 """
 
 from __future__ import annotations
@@ -45,6 +51,7 @@ from config import Config
 from d1_client import D1Client, compute_dedup_key
 from firecrawl_client import FirecrawlClient, FirecrawlError
 from openai_client import OpenAIClient, OpenAIError
+from security_master import SecurityMasterError, build_master, verify
 
 # BSE serves each PDF at AttachLive first; older ones move to AttachHis. We fall
 # back to the historical path by swapping the folder in the stored URL.
@@ -60,6 +67,21 @@ def _int_env(name: str, default: int) -> int:
         return max(0, int(raw))
     except ValueError:
         return default
+
+
+def _bool_env(name: str) -> bool:
+    return (os.getenv(name) or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _within_days(timestamp: str | None, days: int) -> bool:
+    """True if `timestamp` (D1 'YYYY-MM-DD HH:MM:SS', UTC) is within `days` of now."""
+    if not timestamp:
+        return False
+    try:
+        when = datetime.datetime.fromisoformat(str(timestamp).replace(" ", "T"))
+    except ValueError:
+        return False
+    return (datetime.datetime.utcnow() - when) < datetime.timedelta(days=days)
 
 
 def resolve_date_range() -> tuple[datetime.date, datetime.date]:
@@ -428,6 +450,65 @@ def enrich_pass(client: D1Client, config: Config, limit: int) -> None:
     )
 
 
+def build_security_master_pass(client: D1Client | None, config: Config) -> None:
+    """Build the BSE<->NSE<->ISIN translator (security_master).
+
+    Rebuilt AT MOST weekly (it changes rarely) — skipped if the table is fresh,
+    unless FORCE_MASTER_REBUILD is set. In dry-run (no D1) it builds + logs but
+    doesn't write. Never crashes the run; a fetch failure keeps the existing
+    master. This is the prerequisite for industry tagging (next step).
+    """
+    print("\n" + "=" * 40)
+    print("security master (BSE <-> NSE <-> ISIN)")
+    print("=" * 40)
+
+    force = _bool_env("FORCE_MASTER_REBUILD")
+    if client is not None:
+        try:
+            n_existing, last = client.security_master_status()
+        except Exception as exc:  # noqa: BLE001
+            print(f"  status check failed ({exc}); will attempt a build.")
+            n_existing, last = 0, None
+        if n_existing > 0 and not force and _within_days(last, 7):
+            print(f"  fresh: {n_existing} rows, updated {last} (<7d) — skipping "
+                  "rebuild. Set FORCE_MASTER_REBUILD=1 to force.")
+            return
+        reason = "forced" if force else (
+            f"stale (updated {last})" if n_existing else "empty")
+        print(f"  rebuilding — {reason}")
+    else:
+        print("  DRY-RUN (no D1) — building + logging, not writing")
+
+    try:
+        rows, stats = build_master(config)
+    except SecurityMasterError as exc:
+        print(f"  FETCH FAILED: {exc}. Keeping any existing master.")
+        return
+
+    print(f"  sources: NSE {stats['nse_rows']} symbols (EQUITY_L.csv), "
+          f"BSE {stats['bse_rows']} scrips (ListofScripData)")
+    print(f"  joined on ISIN -> {stats['total']} rows "
+          f"({stats['with_nse']} with NSE symbol, {stats['bse_only']} BSE-only)")
+
+    all_ok = True
+    for scrip, symbol, isin, row, ok in verify(rows):
+        got = f"{row['nse_symbol']} / {row['isin']}" if row else "NOT FOUND"
+        print(f"  verify {scrip}: {'OK  ' if ok else 'FAIL'} -> {got} "
+              f"(expect {symbol} / {isin})")
+        all_ok = all_ok and ok
+    if not all_ok:
+        print("  WARNING: a known mapping did not resolve — check the sources.")
+
+    if client is None:
+        print(f"  would upsert {len(rows)} rows into security_master (dry-run)")
+        return
+    try:
+        wrote = client.upsert_security_master(rows)
+        print(f"  upserted {wrote} rows into security_master")
+    except Exception as exc:  # noqa: BLE001
+        print(f"  WRITE FAILED ({exc}); master left unchanged.")
+
+
 def main() -> int:
     config = Config.from_env()
     from_date, to_date = resolve_date_range()
@@ -443,6 +524,10 @@ def main() -> int:
         ensure_schema(client)  # create/upgrade tables (idempotent)
     else:
         print("D1 secrets not set -> DRY-RUN (no DB writes; PDF enrichment skipped)")
+
+    # Company translator (BSE<->NSE<->ISIN) — prerequisite for industry tagging.
+    # Cached weekly, so this is usually a no-op.
+    build_security_master_pass(client, config)
 
     # Phase 1 — fetch new BSE orders and write them.
     fetch_and_write(config, client, from_date, to_date)
