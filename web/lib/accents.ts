@@ -20,6 +20,22 @@ export interface AccentClasses {
   ring: string;
 }
 
+/** Ordered accent cycle used across the cards / table / modal. */
+export const ACCENT_CYCLE: AccentColor[] = [
+  "indigo",
+  "emerald",
+  "amber",
+  "rose",
+  "violet",
+  "sky",
+];
+
+/** Stable accent for an order, by id — so a given order looks the same in the
+ * card grid, the table, and the modal. */
+export function accentForId(id: number): AccentColor {
+  return ACCENT_CYCLE[Math.abs(id) % ACCENT_CYCLE.length];
+}
+
 export const accentClasses: Record<AccentColor, AccentClasses> = {
   indigo: {
     soft: "bg-indigo-50",

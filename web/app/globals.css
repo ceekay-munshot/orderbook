@@ -45,3 +45,25 @@ body {
     linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
   background-attachment: fixed;
 }
+
+/* Detail-modal entrance (backdrop fade + panel rise/scale). */
+@keyframes ob-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes ob-modal-in {
+  from { opacity: 0; transform: translateY(10px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+.ob-backdrop {
+  animation: ob-fade-in 0.15s ease-out;
+}
+.ob-modal {
+  animation: ob-modal-in 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .ob-backdrop,
+  .ob-modal {
+    animation: none;
+  }
+}

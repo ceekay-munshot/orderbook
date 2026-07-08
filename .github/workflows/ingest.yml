@@ -1,7 +1,8 @@
 name: Ingest order-book filings
 
-# Manual trigger for now ("Run workflow" button in the Actions tab).
-# A scheduled trigger is added in a later step — see the commented block below.
+# Runs on a schedule (every 6h) and on-demand via the "Run workflow" button.
+# Scheduled runs use the code defaults (INGEST_DAYS=2, INGEST_LIMIT=10, no master
+# force-rebuild) since they have no dispatch inputs.
 on:
   workflow_dispatch:
     inputs:
@@ -20,9 +21,9 @@ on:
         required: false
         default: false
         type: boolean
-  # schedule:
-  #   # Every 6 hours (UTC). Enable once real ingestion is in place.
-  #   - cron: "0 */6 * * *"
+  schedule:
+    # Every 6 hours (UTC): fetch new orders, read PDFs, re-tag industries.
+    - cron: "0 */6 * * *"
 
 jobs:
   ingest:
@@ -47,12 +48,12 @@ jobs:
       - name: Run BSE reader
         run: python main.py
         env:
-          # Fetch window (from the "days" input; defaults to 2)
-          INGEST_DAYS: ${{ inputs.days }}
-          # PDF-enrichment cap per run (from the "pdf_limit" input; defaults to 5)
-          INGEST_LIMIT: ${{ inputs.pdf_limit }}
+          # Fetch window (dispatch input, or 2 for scheduled runs)
+          INGEST_DAYS: ${{ inputs.days || '2' }}
+          # PDF-enrichment cap per run (dispatch input, or 10 for scheduled runs)
+          INGEST_LIMIT: ${{ inputs.pdf_limit || '10' }}
           # Force-rebuild the security master (else it refreshes at most weekly)
-          FORCE_MASTER_REBUILD: ${{ inputs.force_master }}
+          FORCE_MASTER_REBUILD: ${{ inputs.force_master || false }}
           # Proxy + APIs
           SCRAPEDO_API_KEY: ${{ secrets.SCRAPEDO_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}

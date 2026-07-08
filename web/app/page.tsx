@@ -1,22 +1,11 @@
 import { StatTile } from "@/components/StatTile";
-import { OrderCard } from "@/components/OrderCard";
+import { OrdersExplorer } from "@/components/OrdersExplorer";
 import { Badge } from "@/components/Badge";
 import { Card } from "@/components/Card";
-import { getOrders, type Order } from "@/lib/orders";
-import type { AccentColor } from "@/lib/mockData";
+import { getOrders } from "@/lib/orders";
 
 // Orders are read from D1 per request — never statically prerendered.
 export const dynamic = "force-dynamic";
-
-/* Card accents cycle through the palette so the grid stays colorful. */
-const ACCENTS: AccentColor[] = [
-  "indigo",
-  "emerald",
-  "amber",
-  "rose",
-  "violet",
-  "sky",
-];
 
 /* Inline icons (no icon dependency) — one per KPI tile. */
 const icons = {
@@ -165,34 +154,22 @@ export default async function Home() {
           />
         </section>
 
-        {/* Orders */}
+        {/* Orders — card grid or table view, with a click-through detail modal */}
         <section aria-label="Latest orders">
-          <div className="mb-4 flex items-end justify-between">
-            <div>
-              <h2 className="text-xl font-bold tracking-tight text-slate-900">
-                Latest orders
-              </h2>
-              <p className="mt-1 text-sm text-slate-500">
-                Newest first · across all tracked companies
-              </p>
-            </div>
-            {orders.length > 0 && (
-              <Badge color="indigo">{orders.length} shown</Badge>
-            )}
-          </div>
-
           {orders.length > 0 ? (
-            <div className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3">
-              {orders.map((order, i) => (
-                <OrderCard
-                  key={order.id}
-                  order={order}
-                  accent={ACCENTS[i % ACCENTS.length]}
-                />
-              ))}
-            </div>
+            <OrdersExplorer orders={orders} />
           ) : (
-            <EmptyState />
+            <>
+              <div className="mb-4">
+                <h2 className="text-xl font-bold tracking-tight text-slate-900">
+                  Latest orders
+                </h2>
+                <p className="mt-1 text-sm text-slate-500">
+                  Newest first · across all tracked companies
+                </p>
+              </div>
+              <EmptyState />
+            </>
           )}
         </section>
 
