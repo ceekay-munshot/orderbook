@@ -33,6 +33,7 @@ export const mockOrders: Order[] = [
     targetIndustry: "Infrastructure - Roads",
     description:
       "EPC order to build a 4-lane access-controlled expressway package, including major bridges and interchanges.",
+    summary: null,
     exchange: "BSE",
     category: "Award of Order / Receipt of Order",
     headline: "L&T wins Rs 2,900 crore expressway EPC order (demo fallback)",
@@ -60,6 +61,7 @@ export const mockOrders: Order[] = [
     targetIndustry: "Capital Goods - Electrical Equipment",
     description:
       "Supply and installation of flue-gas desulphurisation (FGD) systems across two thermal power units.",
+    summary: null,
     exchange: "BSE",
     category: "Award of Order / Receipt of Order",
     headline: "BHEL bags Rs 1,240 crore FGD order from NTPC (demo fallback)",
@@ -87,6 +89,7 @@ export const mockOrders: Order[] = [
     targetIndustry: "Infrastructure - Railways",
     description:
       "Design and construction of railway electrification and automatic signalling upgrades on a busy trunk route.",
+    summary: null,
     exchange: "BSE",
     category: "Award of Order / Receipt of Order",
     headline: "RVNL secures Rs 785 crore railway electrification order (demo fallback)",

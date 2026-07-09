@@ -73,23 +73,39 @@ export default async function Home() {
     <div className="min-h-screen">
       {/* Header */}
       <header className="sticky top-0 z-10 border-b border-slate-200/70 bg-white/70 backdrop-blur-md">
+        {/* Colorful top hairline matching the table/gradient palette. */}
+        <div
+          className="h-1 w-full"
+          style={{ backgroundImage: "linear-gradient(90deg,#6366f1 0%,#8b5cf6 50%,#0ea5e9 100%)" }}
+          aria-hidden
+        />
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-6 py-4">
           <div className="flex items-center gap-3">
             <div
-              className="flex h-10 w-10 items-center justify-center rounded-xl text-lg font-black text-white shadow-md"
+              className="flex h-11 w-11 items-center justify-center rounded-2xl text-xl font-black text-white shadow-md"
               style={{
                 backgroundImage:
-                  "linear-gradient(135deg, #6366f1 0%, #22d3ee 100%)",
+                  "linear-gradient(135deg, #6366f1 0%, #8b5cf6 55%, #0ea5e9 100%)",
               }}
             >
-              O
+              D
             </div>
             <div>
-              <p className="text-lg font-bold leading-none tracking-tight text-slate-900">
-                Orderbook
+              <p className="text-lg font-extrabold leading-none tracking-tight sm:text-xl">
+                <span
+                  style={{
+                    backgroundImage:
+                      "linear-gradient(110deg,#4f46e5 0%,#8b5cf6 50%,#0ea5e9 100%)",
+                    WebkitBackgroundClip: "text",
+                    backgroundClip: "text",
+                    color: "transparent",
+                  }}
+                >
+                  Order Book Tracker
+                </span>
               </p>
-              <p className="mt-1 text-xs text-slate-500">
-                Indian order-book intelligence
+              <p className="mt-1 text-xs font-semibold tracking-wide text-slate-500">
+                Daksham Capital
               </p>
             </div>
           </div>
@@ -175,9 +191,8 @@ export default async function Home() {
 
         {/* Footer note */}
         <footer className="mt-12 border-t border-slate-200/70 pt-6 text-sm text-slate-400">
-          Reading orders from Cloudflare D1 (binding{" "}
-          <code className="text-slate-500">DB</code>). Filters, search, and
-          per-company history arrive in later steps.
+          Order Book Tracker · Daksham Capital — order &amp; contract wins from
+          Indian listed companies, every row source- and evidence-backed.
         </footer>
       </main>
     </div>

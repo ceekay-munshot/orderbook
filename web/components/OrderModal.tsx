@@ -36,6 +36,22 @@ function darken(hex: string, f = 0.52): string {
   return `rgb(${r}, ${g}, ${b})`;
 }
 
+/** Strip the boilerplate regulatory lead-in from a filing so a reader sees what
+ * the order actually IS. A stopgap for rows that don't yet have an AI `summary`;
+ * once the ingest writes `order.summary`, that clean sentence is used instead. */
+function cleanFilingText(text: string | null | undefined): string | null {
+  if (!text) return null;
+  let t = text.trim();
+  // "Pursuant to Regulation 30 of SEBI (Listing Obligations and Disclosure
+  //  Requirements) Regulations, 2015, ..."
+  t = t.replace(/^pursuant to regulation\b[\s\S]*?regulations?,?\s*\d{4}\s*,?\s*/i, "");
+  // "we are pleased/thrilled to announce/inform/intimate that ..."
+  t = t.replace(/^(we|the company)\b[\s\S]*?\b(announce|inform|intimate|state|advise)\b[\s\S]*?that\s+/i, "");
+  t = t.trim();
+  if (!t) return null;
+  return t.charAt(0).toUpperCase() + t.slice(1);
+}
+
 /** A white translucent pill for the colored header. */
 function HeaderChip({
   children,
@@ -100,8 +116,10 @@ export function OrderModal({
   const classified =
     order.targetIndustry && order.targetIndustry !== "Unclassified";
   const hasMonths = order.durationMonths != null;
-  // One narrative block only — the description if we have it, else the headline.
-  const summary = order.description ?? order.headline;
+  // Prefer the AI-written order summary; fall back to the filing text with its
+  // regulatory boilerplate stripped. One block only — never the raw quote twice.
+  const summary =
+    order.summary?.trim() || cleanFilingText(order.description ?? order.headline);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -125,7 +143,7 @@ export function OrderModal({
       aria-label={`${order.companyName} order details`}
     >
       <div
-        className="ob-modal relative flex max-h-[92vh] w-full max-w-xl flex-col overflow-hidden rounded-t-3xl bg-white shadow-2xl sm:max-h-[88vh] sm:rounded-3xl"
+        className="ob-modal relative flex max-h-[92vh] w-full max-w-3xl flex-col overflow-hidden rounded-t-3xl bg-white shadow-2xl sm:max-h-[88vh] sm:rounded-3xl"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Colored gradient header */}
@@ -200,7 +218,7 @@ export function OrderModal({
           )}
 
           {/* Meta grid */}
-          <dl className="grid grid-cols-2 gap-x-4 gap-y-3 rounded-2xl bg-slate-50/70 p-4 sm:grid-cols-3">
+          <dl className="grid grid-cols-3 gap-x-4 gap-y-3 rounded-2xl bg-slate-50/70 p-4">
             <Detail label="Filed" accentClass={c.text}>
               {formatDate(order.filedAt)}
             </Detail>
@@ -210,18 +228,15 @@ export function OrderModal({
             <Detail label="Exchange" accentClass={c.text}>
               {order.exchange ?? "—"}
             </Detail>
-            <Detail label="ISIN" accentClass={c.text}>
-              {order.isin ?? "—"}
-            </Detail>
           </dl>
 
-          {/* Filing summary — one clamped block, no duplicate quote */}
+          {/* What the order is — full text, no truncation */}
           {summary && (
             <div>
               <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
-                Filing summary
+                What this order is
               </p>
-              <p className="mt-1 line-clamp-3 text-sm leading-relaxed text-slate-600">
+              <p className="mt-1 text-sm leading-relaxed text-slate-600">
                 {summary}
               </p>
             </div>

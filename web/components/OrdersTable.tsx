@@ -71,7 +71,7 @@ export function OrdersTable({
               <tr
                 key={order.id}
                 onClick={() => onSelect(order)}
-                style={{ borderLeft: `4px solid ${accentHex[accent]}` }}
+                style={{ boxShadow: `inset 3px 0 0 ${accentHex[accent]}` }}
                 className={
                   "cursor-pointer border-b border-slate-200/70 align-middle transition last:border-b-0 hover:bg-brand-50/60 " +
                   (i % 2 ? "bg-slate-50/50" : "bg-white/80")
