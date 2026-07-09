@@ -25,6 +25,7 @@ Env:
   INGEST_DAYS (default 2)                   -> fetch window = today-INGEST_DAYS..today
   INGEST_FROM_DATE / INGEST_TO_DATE (YYYY-MM-DD, optional) -> explicit overrides
   INGEST_LIMIT (default 10)                 -> max PDFs to enrich per run (cost cap)
+  INGEST_SUMMARY_LIMIT (default 20)         -> max order summaries to write per run
   INGEST_MAX_PAGES (default 60)             -> cap on BSE page fetches per run
 
 Phase 3 here is LIGHT: it only tags orders from the CACHED industry_map (cheap),
@@ -467,6 +468,61 @@ def enrich_pass(client: D1Client, config: Config, limit: int) -> None:
     )
 
 
+def summarize_pass(client: D1Client, config: Config, limit: int) -> None:
+    """Write a plain-English 'what this order is' summary for rows that don't have
+    one yet — from the stored PDF text when present, else the description/headline.
+
+    This is what the dashboard shows instead of the SEBI regulatory boilerplate.
+    Cost-capped at ``limit`` rows per run (so it backfills over a few runs); never
+    crashes the workflow.
+    """
+    print("\n" + "=" * 40)
+    print("order summaries")
+    print("=" * 40)
+    if not config.openai_api_key:
+        print("  OPENAI_API_KEY not set — skipping summaries.")
+        return
+    try:
+        rows = client.orders_needing_summary(limit)
+    except Exception as exc:  # noqa: BLE001
+        print(f"  could not query orders needing a summary ({exc}); skipping.")
+        return
+
+    print(f"  orders needing a summary: {len(rows)} (INGEST_SUMMARY_LIMIT={limit})")
+    if not rows:
+        print("  nothing to summarize — every order already has one.")
+        return
+
+    openai_client = OpenAIClient.from_config(config)
+    print(f"  using model: {openai_client.model}\n")
+
+    n_written = n_fail = 0
+    for row in rows:
+        label = f"{row.get('company_name', '?')} (id={row.get('id')})"
+        source = (
+            row.get("raw_text") or row.get("description") or row.get("headline") or ""
+        ).strip()
+        if not source:
+            continue
+        try:
+            summary = openai_client.summarize(source)
+        except OpenAIError as exc:
+            n_fail += 1
+            print(f"  ✗ {label}: {exc}")
+            continue
+        if not summary:
+            continue
+        try:
+            client.update_order(row["id"], {"summary": summary})
+            n_written += 1
+            print(f"  ✓ {label}: {summary[:90]}")
+        except Exception as exc:  # noqa: BLE001
+            n_fail += 1
+            print(f"  ✗ {label}: update failed ({exc})")
+
+    print(f"\norder summaries: wrote {n_written}, failed {n_fail}")
+
+
 def build_security_master_pass(client: D1Client | None, config: Config) -> None:
     """Build the BSE<->NSE<->ISIN translator (security_master).
 
@@ -796,10 +852,12 @@ def main() -> int:
     # Phase 1 — fetch new BSE orders and write them.
     fetch_and_write(config, client, from_date, to_date)
 
-    # Phase 2 — enrich existing DB rows that still need value/duration.
+    # Phase 2 — enrich existing DB rows that still need value/duration, then write
+    # a readable summary for any order that doesn't have one yet.
     if writing and client is not None:
         renormalize_pass(client)  # free: recover numbers from stored phrases
         enrich_pass(client, config, _int_env("INGEST_LIMIT", 10))
+        summarize_pass(client, config, _int_env("INGEST_SUMMARY_LIMIT", 20))
 
     # Phase 3 (light) — tag orders from the CACHED industry_map. The heavy map
     # rebuild (security master + stockscans + BSE fallback) is a separate job now

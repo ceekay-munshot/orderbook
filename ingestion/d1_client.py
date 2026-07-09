@@ -82,6 +82,7 @@ UPDATABLE_COLUMNS: frozenset[str] = frozenset(
         "duration_months",
         "target_industry",
         "description",
+        "summary",
         "raw_text",
         "extraction_confidence",
         "extraction_model",
@@ -285,6 +286,19 @@ class D1Client:
             "FROM orders "
             "WHERE (order_value_crore IS NULL OR duration_months IS NULL) "
             "AND (pdf_checked IS NULL OR pdf_checked = 0) "
+            "ORDER BY filed_at DESC LIMIT ?"
+        )
+        return self.query(sql, [int(limit)])
+
+    def orders_needing_summary(self, limit: int) -> list[dict[str, Any]]:
+        """Return orders that still have no plain-English summary but do have some
+        text to write one from (the PDF text, else the description/headline).
+        Newest first, capped at ``limit`` (per-run cost guard)."""
+        sql = (
+            "SELECT id, company_name, raw_text, description, headline "
+            "FROM orders "
+            "WHERE (summary IS NULL OR summary = '') "
+            "AND (raw_text IS NOT NULL OR description IS NOT NULL OR headline IS NOT NULL) "
             "ORDER BY filed_at DESC LIMIT ?"
         )
         return self.query(sql, [int(limit)])

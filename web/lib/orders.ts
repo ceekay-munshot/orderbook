@@ -23,6 +23,7 @@ export interface Order {
   durationMonths: number | null;
   targetIndustry: string | null;
   description: string | null;
+  summary: string | null;
   // evidence / provenance
   exchange: string;
   category: string | null;
@@ -53,6 +54,7 @@ interface OrderRow {
   duration_months: number | null;
   target_industry: string | null;
   description: string | null;
+  summary: string | null;
   exchange: string;
   category: string | null;
   headline: string | null;
@@ -68,7 +70,7 @@ interface OrderRow {
 }
 
 /** Columns loaded for the list view (everything except the large raw_text blob). */
-const SELECT_COLUMNS = [
+const ALL_COLUMNS = [
   "id",
   "company_name",
   "bse_scrip_code",
@@ -81,6 +83,7 @@ const SELECT_COLUMNS = [
   "duration_months",
   "target_industry",
   "description",
+  "summary",
   "exchange",
   "category",
   "headline",
@@ -93,7 +96,12 @@ const SELECT_COLUMNS = [
   "filed_at",
   "created_at",
   "updated_at",
-].join(", ");
+];
+const SELECT_WITH_SUMMARY = ALL_COLUMNS.join(", ");
+// `summary` is added by migration 0005, which the ingestion applies. If the web
+// deploys before that runs, the column won't exist yet — so we fall back to a
+// query without it (summary is then null) instead of erroring into demo data.
+const SELECT_WITHOUT_SUMMARY = ALL_COLUMNS.filter((c) => c !== "summary").join(", ");
 
 /**
  * Minimal D1 surface we actually use. Declared locally (rather than pulling in
@@ -125,6 +133,7 @@ function mapRow(r: OrderRow): Order {
     durationMonths: r.duration_months,
     targetIndustry: r.target_industry,
     description: r.description,
+    summary: r.summary ?? null,
     exchange: r.exchange,
     category: r.category,
     headline: r.headline,
@@ -160,11 +169,18 @@ export async function getOrders(): Promise<OrdersResult> {
     const { env } = await getCloudflareContext({ async: true });
     const db = (env as { DB?: D1DatabaseLike }).DB;
     if (!db) return { orders: mockOrders, isLive: false };
-    const { results } = await db
-      .prepare(
-        `SELECT ${SELECT_COLUMNS} FROM orders ORDER BY filed_at DESC, id DESC`,
-      )
-      .all<OrderRow>();
+    const order = "FROM orders ORDER BY filed_at DESC, id DESC";
+    let results: OrderRow[];
+    try {
+      ({ results } = await db
+        .prepare(`SELECT ${SELECT_WITH_SUMMARY} ${order}`)
+        .all<OrderRow>());
+    } catch {
+      // `summary` column not there yet (migration 0005 not applied) — retry without it.
+      ({ results } = await db
+        .prepare(`SELECT ${SELECT_WITHOUT_SUMMARY} ${order}`)
+        .all<OrderRow>());
+    }
     return { orders: results.map(mapRow), isLive: true };
   } catch (err) {
     console.warn(

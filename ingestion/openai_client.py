@@ -53,6 +53,19 @@ SYSTEM_PROMPT = (
     "Copy phrases verbatim. Do not add units, numbers, or names not in the text."
 )
 
+SUMMARY_SYSTEM_PROMPT = (
+    "You write a short, plain-English summary of an Indian listed company's "
+    "order-win filing, for a finance dashboard. In ONE or TWO sentences, say what "
+    "the order actually is: what is being supplied, built, or serviced; who "
+    "awarded it; and the value and timeline if they are stated. Be concrete and "
+    "factual.\n\n"
+    "Do NOT restate regulatory boilerplate (e.g. 'Pursuant to Regulation 30 of "
+    "SEBI (Listing Obligations and Disclosure Requirements) Regulations, 2015'). "
+    "Do NOT add a preamble like 'The company announced'. Do NOT invent any detail "
+    "not present in the text. Return ONLY the summary sentence(s) as plain text — "
+    "no quotes, no labels, no markdown."
+)
+
 
 class OpenAIError(RuntimeError):
     """Raised when an OpenAI request fails or returns an unexpected shape."""
@@ -171,6 +184,68 @@ class OpenAIClient:
         raise OpenAIError(
             f"OpenAI request failed after {retries + 1} attempt(s): {last_err}"
         )
+
+    def summarize(
+        self,
+        text: str,
+        *,
+        retries: int = 2,
+        backoff: float = 2.0,
+    ) -> str | None:
+        """Return a 1-2 sentence plain-English summary of what the order is, from
+        the filing/PDF ``text`` — regulatory boilerplate stripped. ``None`` when
+        there's no usable text. Retries transient errors; raises
+        :class:`OpenAIError` on a non-retryable failure or after exhausting them.
+        """
+        if not self._api_key:
+            raise OpenAIError("no OpenAI API key configured")
+        snippet = (text or "").strip()[:MAX_INPUT_CHARS]
+        if not snippet:
+            return None
+
+        payload = {
+            "model": self._model,
+            "temperature": 0.2,
+            "messages": [
+                {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
+                {"role": "user", "content": "Filing text:\n\n" + snippet},
+            ],
+        }
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+
+        last_err: Exception | None = None
+        for attempt in range(retries + 1):
+            try:
+                resp = self._session.post(
+                    OPENAI_CHAT_URL, json=payload, headers=headers, timeout=self._timeout
+                )
+            except requests.RequestException as exc:
+                last_err = exc
+            else:
+                if resp.status_code == 200:
+                    return self._summary_text(resp.json())
+                last_err = OpenAIError(f"HTTP {resp.status_code}: {resp.text[:200]}")
+                if resp.status_code not in (429, 500, 502, 503, 504):
+                    raise last_err
+            if attempt < retries:
+                time.sleep(backoff * (attempt + 1))
+        raise OpenAIError(
+            f"OpenAI summarize failed after {retries + 1} attempt(s): {last_err}"
+        )
+
+    def _summary_text(self, body: dict[str, Any]) -> str | None:
+        """Pull the assistant's plain-text summary out of a chat response."""
+        try:
+            content = body["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise OpenAIError(
+                f"unexpected OpenAI response shape: {str(body)[:200]}"
+            ) from exc
+        text = (content or "").strip().strip('"').strip()
+        return text or None
 
     def _parse_response(self, body: dict[str, Any]) -> Extraction:
         try:
