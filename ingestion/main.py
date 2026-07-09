@@ -46,6 +46,7 @@ from bse_client import (
     build_fetchers,
     duration_to_months,
     iter_matched,
+    text_is_noncommercial,
     value_phrase_to_crore,
 )
 from bse_industry import fetch_bse_industries
@@ -468,6 +469,39 @@ def enrich_pass(client: D1Client, config: Config, limit: int) -> None:
     )
 
 
+def cleanup_noncommercial_pass(client: D1Client) -> None:
+    """Delete orders that are actually legal/court/tribunal rulings, not commercial
+    order wins (BSE files both under "Award of Order / Receipt of Order"). These
+    have no value / customer / duration and shouldn't be in the order book. Runs
+    early so the dashboard clears them right away. Never crashes the run.
+    """
+    print("\n" + "=" * 40)
+    print("cleanup: drop non-commercial (legal/court) filings")
+    print("=" * 40)
+    try:
+        rows = client.orders_text_for_cleanup()
+    except Exception as exc:  # noqa: BLE001
+        print(f"  could not read orders ({exc}); skipping cleanup.")
+        return
+    bad = []
+    for r in rows:
+        blob = " ".join(
+            str(r.get(k) or "")
+            for k in ("company_name", "headline", "description", "summary", "category")
+        )
+        if text_is_noncommercial(blob):
+            bad.append((r["id"], r.get("company_name")))
+    if not bad:
+        print("  none found — order book is all commercial orders.")
+        return
+    try:
+        n = client.delete_orders([b[0] for b in bad])
+        listing = ", ".join(f"{name} (id={oid})" for oid, name in bad)
+        print(f"  removed {n} non-commercial order(s): {listing}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"  delete failed ({exc}); orders left in place.")
+
+
 def summarize_pass(client: D1Client, config: Config, limit: int) -> None:
     """Write a plain-English 'what this order is' summary for rows that don't have
     one yet — from the stored PDF text when present, else the description/headline.
@@ -846,6 +880,8 @@ def main() -> int:
     if writing:
         client = D1Client.from_config(config)
         ensure_schema(client)  # create/upgrade tables (idempotent)
+        # Drop any legal/court "orders" first, so the dashboard clears immediately.
+        cleanup_noncommercial_pass(client)
     else:
         print("D1 secrets not set -> DRY-RUN (no DB writes; PDF enrichment skipped)")
 
