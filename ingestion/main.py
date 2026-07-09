@@ -34,7 +34,9 @@ Env:
 There is also a phase-0 build of the `security_master` translator (BSE scrip
 code <-> NSE symbol <-> ISIN), the prerequisite for industry tagging. It is
 cached and rebuilt at most weekly, so it is usually a no-op. Phase 3 then tags
-each order's industry from the FULL stockscans classification (cached a few days).
+each order's industry from the FULL stockscans classification, with BSE's own
+SEBI industry filling whatever stockscans doesn't cover so every listed company
+gets classified (cached a few days).
 """
 
 from __future__ import annotations
@@ -50,6 +52,7 @@ from bse_client import (
     iter_matched,
     value_phrase_to_crore,
 )
+from bse_industry import fetch_bse_industries
 from config import Config
 from d1_client import D1Client, compute_dedup_key
 from firecrawl_client import FirecrawlClient, FirecrawlError
@@ -64,6 +67,13 @@ from stockscans import (
 # The full stockscans pull (5,800+ companies) is cached this many days between
 # refreshes — it's larger than the daksham file, so we don't re-fetch every run.
 INDUSTRY_CACHE_DAYS = 3
+
+# A rebuilt industry_map must retain at least this fraction of the coverage the
+# existing map already has, or it's treated as a degraded/partial build (a source
+# outage that resolved only a subset) and discarded so it can't wipe a good map.
+# The BSE tail is ~6% of the universe, so 0.95 catches "BSE fallback silently
+# dropped" as well as a thin BSE-only result, while tolerating normal churn.
+MIN_MAP_RETAIN = 0.95
 
 # BSE serves each PDF at AttachLive first; older ones move to AttachHis. We fall
 # back to the historical path by swapping the folder in the stored URL.
@@ -531,14 +541,15 @@ def build_security_master_pass(client: D1Client | None, config: Config) -> None:
         print(f"  WRITE FAILED ({exc}); master left unchanged.")
 
 
-def _build_industry_map_rows(
+def _classify_from_stockscans(
     config: Config, sec_rows: list[dict]
-) -> tuple[list[dict] | None, str | None]:
-    """Join security_master with the stockscans classification.
+) -> tuple[list[dict], str | None]:
+    """Classify companies from stockscans (the PRIMARY source).
 
     Tries the FULL stockscans pull first (join on NSE symbol, then BSE ticker),
-    then falls back to the daksham live mapping (NSE symbol only). Returns
-    (map_rows, source) or (None, None) if both sources fail.
+    then the daksham live mapping (NSE symbol only). Returns (classified_rows,
+    source) — each row carries its own ``source`` — or ([], None) if both fail.
+    Whatever it can't classify is filled from BSE afterwards by the caller.
     """
     # Full pull: keys are EXCHANGE:SYMBOL. Match a company via NSE:<nse_symbol>
     # first, then BSE:<bse_symbol> (BSE ticker) — the latter classifies BSE-only
@@ -558,27 +569,80 @@ def _build_industry_map_rows(
                 by_id.get(f"BSE:{bsym}") if bsym else None
             )
             if industry:
-                rows.append({**r, "industry": industry})
+                rows.append({**r, "industry": industry, "source": "stockscans_full"})
         return rows, "stockscans_full"
 
     try:
         sym_to_industry = fetch_industry_by_symbol(config)
     except StockScansError as exc:
         print(f"  daksham fallback also failed ({exc}).")
-        return None, None
+        return [], None
     print(f"  daksham fallback: {len(sym_to_industry)} symbols")
     rows = []
     for r in sec_rows:
         industry = sym_to_industry.get((r.get("nse_symbol") or "").upper())
         if industry:
-            rows.append({**r, "industry": industry})
+            rows.append({**r, "industry": industry, "source": "stockscans_daksham"})
     return rows, "stockscans_daksham"
 
 
+def _fill_gap_from_bse(unclassified: list[dict]) -> list[dict]:
+    """Classify the companies stockscans missed from BSE's own SEBI industry.
+
+    BSE publishes an industry for EVERY listed scrip, keyed by scrip code, so
+    this closes the ~6% tail stockscans.in doesn't track — the small/illiquid
+    names that can still file an order and would otherwise stay Unclassified.
+    Best-effort: scrips BSE can't resolve are left out (still Unclassified).
+    """
+    gap_scrips = [
+        s for s in (r.get("bse_scrip_code") for r in unclassified) if s
+    ]
+    if not gap_scrips:
+        return []
+    bse_map = fetch_bse_industries(gap_scrips)
+    rows = []
+    for r in unclassified:
+        info = bse_map.get(r.get("bse_scrip_code"))
+        if info and info.get("industry"):
+            rows.append({
+                **r,
+                "industry": info["industry"],
+                "sub_industry": info.get("sub_industry"),
+                "source": "bse",
+            })
+    print(f"  BSE fallback: classified {len(rows)}/{len(gap_scrips)} "
+          "companies stockscans didn't cover")
+    return rows
+
+
+def _build_industry_map_rows(
+    config: Config, sec_rows: list[dict]
+) -> tuple[list[dict] | None, str | None]:
+    """Build industry_map rows: stockscans first, BSE fills the rest.
+
+    stockscans (primary) classifies the bulk of the market; BSE's official
+    per-scrip classification then covers whatever it missed, so every listed
+    company an order can name gets an industry. Returns (map_rows, source) — the
+    source labels which sources contributed — or (None, None) if nothing did.
+    """
+    classified, ss_source = _classify_from_stockscans(config, sec_rows)
+
+    done = {r.get("bse_scrip_code") for r in classified}
+    unclassified = [r for r in sec_rows if r.get("bse_scrip_code") not in done]
+    bse_rows = _fill_gap_from_bse(unclassified) if unclassified else []
+
+    rows = classified + bse_rows
+    if not rows:
+        return None, None
+    source = "+".join(part for part in (ss_source, "bse" if bse_rows else None) if part)
+    return rows, source or "bse"
+
+
 def refresh_industry_map(client: D1Client, config: Config) -> None:
-    """Rebuild industry_map from security_master × stockscans — but at most once
-    every few days (the full pull is large), unless FORCE_INDUSTRY_REFRESH is set.
-    On any fetch failure the existing map is kept (never wiped)."""
+    """Rebuild industry_map from security_master × stockscans (+ BSE fallback) —
+    but at most once every few days (the full pull is large), unless
+    FORCE_INDUSTRY_REFRESH is set. On any fetch failure the existing map is kept
+    (never wiped)."""
     force = _bool_env("FORCE_INDUSTRY_REFRESH")
     try:
         n_map, last, source = client.industry_map_status()
@@ -607,7 +671,20 @@ def refresh_industry_map(client: D1Client, config: Config) -> None:
 
     map_rows, source_used = _build_industry_map_rows(config, sec_rows)
     if map_rows is None:
-        print("  both full pull and daksham fallback failed — keeping existing map.")
+        print("  all industry sources failed (stockscans + BSE) — keeping existing map.")
+        return
+
+    # A rebuild REPLACES the whole map (replace_industry_map deletes then inserts),
+    # so a degraded build — a transient stockscans/BSE outage or rate-limit that
+    # resolved only a subset — must not wipe a healthy map and retag most orders
+    # Unclassified. Require the rebuild to retain ~the coverage we already have;
+    # otherwise keep the existing map and retry next run (it's still stale, so the
+    # next run rebuilds again — self-healing once the sources recover). FORCE lets
+    # an operator override this floor deliberately.
+    if n_map > 0 and len(map_rows) < n_map * MIN_MAP_RETAIN and not force:
+        print(f"  rebuild classified {len(map_rows)} vs {n_map} already mapped "
+              f"(< {MIN_MAP_RETAIN:.0%}) — treating as a degraded/partial build, "
+              "keeping existing map. Set FORCE_INDUSTRY_REFRESH=1 to override.")
         return
     try:
         n_written = client.replace_industry_map(map_rows, source=source_used or "stockscans")
@@ -667,15 +744,16 @@ def tag_from_industry_map(client: D1Client) -> None:
 
 
 def tag_orders_pass(client: D1Client, config: Config) -> None:
-    """Phase 3: industry tagging from the FULL stockscans classification.
+    """Phase 3: industry tagging for the whole listed universe.
 
     Chain: order.bse_scrip_code -> security_master (nse_symbol / bse_symbol) ->
-    stockscans industry. Not found -> 'Unclassified' (never guessed). The
+    stockscans industry, with BSE's own SEBI industry filling whatever stockscans
+    doesn't cover. Not found anywhere -> 'Unclassified' (never guessed). The
     classification is cached in industry_map for a few days; orders are re-tagged
     from it every run. Never crashes the run.
     """
     print("\n" + "=" * 40)
-    print("phase 3: industry tagging (full stockscans)")
+    print("phase 3: industry tagging (stockscans + BSE fallback)")
     print("=" * 40)
     refresh_industry_map(client, config)
     tag_from_industry_map(client)

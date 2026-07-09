@@ -330,8 +330,12 @@ class D1Client:
 
     def industry_map_status(self) -> tuple[int, str | None, str | None]:
         """Return (row_count, max_updated_at, source) for industry_map — used to
-        honor the multi-day cache of the full stockscans pull. A rebuild wipes +
-        rewrites the table with one source, so MAX(source) is representative."""
+        honor the multi-day cache of the full stockscans pull. Rows are stamped
+        with their own source ('stockscans_full', 'bse', 'stockscans_daksham');
+        MAX(source) returns 'stockscans_full' whenever the full pull ran (it
+        sorts above 'bse'), which is exactly the "is the map fully built?" signal
+        the caller caches on — a degraded daksham/BSE-only build sorts lower and
+        so is (correctly) never treated as fresh."""
         rows = self.query(
             "SELECT COUNT(*) AS n, MAX(updated_at) AS last, MAX(source) AS source "
             "FROM industry_map"
@@ -363,17 +367,18 @@ class D1Client:
     ) -> int:
         """Rebuild industry_map from scratch (DELETE then batch INSERT).
 
-        The table is fully derived from security_master × the stockscans mapping,
-        so a clean replace avoids stale rows when the mapping changes. Only rows
-        that carry an industry are inserted (industry is NOT NULL). `source` and
-        updated_at are stamped so the pull can be cached across runs.
+        The table is derived from security_master × the industry sources
+        (stockscans primary, BSE fallback), so a clean replace avoids stale rows
+        when a mapping changes. Only rows that carry an industry are inserted
+        (industry is NOT NULL). Each row's own ``source`` is stamped (falling
+        back to the ``source`` arg), so a mixed build keeps per-company
+        provenance; ``sub_industry`` and updated_at are written too.
         """
         self.query("DELETE FROM industry_map")
         cols = (
             "(bse_scrip_code, isin, nse_symbol, company_name, "
-            "name_normalized, industry, source, updated_at)"
+            "name_normalized, industry, sub_industry, source, updated_at)"
         )
-        src = _sql_literal(source)
         written = 0
         for i in range(0, len(rows), batch):
             chunk = rows[i : i + batch]
@@ -390,7 +395,8 @@ class D1Client:
                             _sql_literal(name),
                             _sql_literal(name.lower() if name else None),
                             _sql_literal(r.get("industry")),
-                            src,
+                            _sql_literal(r.get("sub_industry")),
+                            _sql_literal(r.get("source") or source),
                             "datetime('now')",
                         )
                     )
