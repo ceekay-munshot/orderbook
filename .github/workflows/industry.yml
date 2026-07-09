@@ -1,0 +1,61 @@
+name: Refresh industry classification
+
+# Rebuilds the industry map — the BSE<->NSE<->ISIN security master plus the FULL
+# stockscans.in pull and the BSE fallback for the tail — then re-tags every order
+# from it. This is the SLOW part of the pipeline (thousands of HTTP calls), so it
+# runs on its own, less-frequent schedule instead of on every 6-hourly ingest.
+#
+# Both caches still apply (security master weekly, industry map ~3 days), so most
+# scheduled runs are cheap no-ops that just re-tag from the cached map; the full
+# rebuild happens roughly twice a week. Use the force_* toggles to rebuild now.
+on:
+  workflow_dispatch:
+    inputs:
+      force_master:
+        description: "Force-rebuild the BSE<->NSE<->ISIN security master (else weekly cache)"
+        required: false
+        default: false
+        type: boolean
+      force_industry:
+        description: "Force re-pull the FULL stockscans + BSE industry map (else ~3-day cache)"
+        required: false
+        default: false
+        type: boolean
+  schedule:
+    # Daily at 20:00 UTC. The ~3-day map cache throttles the expensive rebuild;
+    # off-days just re-tag from the cached map.
+    - cron: "0 20 * * *"
+
+jobs:
+  refresh-industry:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ingestion
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: ingestion/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Refresh industry classification
+        run: python refresh_industry.py
+        env:
+          # Force-rebuild the security master (else it refreshes at most weekly)
+          FORCE_MASTER_REBUILD: ${{ inputs.force_master || false }}
+          # Force re-pull the full stockscans + BSE industry map (else ~3-day cache)
+          FORCE_INDUSTRY_REFRESH: ${{ inputs.force_industry || false }}
+          # Proxy (BSE / NSE fetches fall back to Scrape.do if a runner is blocked)
+          SCRAPEDO_API_KEY: ${{ secrets.SCRAPEDO_API_KEY }}
+          # Cloudflare D1 (required — without it there is nothing to refresh)
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_D1_DATABASE_ID: ${{ secrets.CF_D1_DATABASE_ID }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}

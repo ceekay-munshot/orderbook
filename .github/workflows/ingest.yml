@@ -1,8 +1,9 @@
 name: Ingest order-book filings
 
-# Runs on a schedule (every 6h) and on-demand via the "Run workflow" button.
-# Scheduled runs use the code defaults (INGEST_DAYS=2, INGEST_LIMIT=10, no master
-# force-rebuild) since they have no dispatch inputs.
+# Fetch new BSE orders, enrich PDFs, and tag orders from the CACHED industry map.
+# The slow industry-map rebuild lives in its own workflow (industry.yml), so this
+# job stays fast and runs every 6h. Scheduled runs use the code defaults
+# (INGEST_DAYS=2, INGEST_LIMIT=10) since they have no dispatch inputs.
 on:
   workflow_dispatch:
     inputs:
@@ -16,18 +17,8 @@ on:
         required: false
         default: "5"
         type: string
-      force_master:
-        description: "Force-rebuild the BSE<->NSE<->ISIN security master (else weekly cache)"
-        required: false
-        default: false
-        type: boolean
-      force_industry:
-        description: "Force re-pull the FULL stockscans industry map (else ~3-day cache)"
-        required: false
-        default: false
-        type: boolean
   schedule:
-    # Every 6 hours (UTC): fetch new orders, read PDFs, re-tag industries.
+    # Every 6 hours (UTC): fetch new orders, read PDFs, tag from the cached map.
     - cron: "0 */6 * * *"
 
 jobs:
@@ -57,10 +48,6 @@ jobs:
           INGEST_DAYS: ${{ inputs.days || '2' }}
           # PDF-enrichment cap per run (dispatch input, or 10 for scheduled runs)
           INGEST_LIMIT: ${{ inputs.pdf_limit || '10' }}
-          # Force-rebuild the security master (else it refreshes at most weekly)
-          FORCE_MASTER_REBUILD: ${{ inputs.force_master || false }}
-          # Force re-pull the full stockscans industry map (else ~3-day cache)
-          FORCE_INDUSTRY_REFRESH: ${{ inputs.force_industry || false }}
           # Proxy + APIs
           SCRAPEDO_API_KEY: ${{ secrets.SCRAPEDO_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
