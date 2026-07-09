@@ -61,7 +61,8 @@ orderbook/
 │   ├── d1_client.py          # Runs SQL against Cloudflare D1 via its HTTP API
 │   ├── bse_client.py         # Reads BSE order announcements + value/duration parse
 │   ├── security_master.py    # BSE scrip <-> NSE symbol <-> ISIN translator
-│   ├── stockscans.py         # live Stock Scan (daksham) industry mapping
+│   ├── stockscans.py         # stockscans.in industry mapping (primary source)
+│   ├── bse_industry.py       # BSE official SEBI industry (fallback, fills the tail)
 │   ├── firecrawl_client.py   # Fetches + parses BSE pages / order PDFs
 │   ├── scrapedo_client.py    # STUB: proxied fetch for BSE (fallback, TODO)
 │   ├── openai_client.py      # Extracts value/duration/awarder from PDF text
@@ -204,16 +205,27 @@ so repeat runs don't re-download it. `INGEST_LIMIT` caps how many PDFs per run.
 
 ## Industry tagging (Phase 3)
 
-After enrichment, `main.py` tags every order's `target_industry` from the FULL
-stockscans.in classification (~5,800 companies, ~half BSE-listed) — pulled from
-its public per-company JSON API and cached in `industry_map` for a few days
-(`FORCE_INDUSTRY_REFRESH` to re-pull). Resolution:
+After enrichment, `main.py` tags every order's `target_industry`. Because an
+order can be received by *any* listed company, the classification is built to
+cover the **whole** Indian listed universe (~4,900 companies), from two sources
+and cached in `industry_map` for a few days (`FORCE_INDUSTRY_REFRESH` to re-pull):
 
-    order.bse_scrip_code
-      -> security_master.nse_symbol  -> stockscans "NSE:<symbol>"   (primary)
-      -> security_master.bse_symbol  -> stockscans "BSE:<ticker>"   (BSE-only)
+1. **stockscans.in (primary)** — the FULL classification (~5,800 companies), with
+   the richer taxonomy that matches the daksham dashboard. Resolution:
 
-Anything that doesn't resolve becomes `'Unclassified'` — never guessed from the
-name. If the full pull fails it falls back to the daksham live mapping and never
-wipes existing tags. ALL orders are re-tagged from the cached map every run, so a
+       order.bse_scrip_code
+         -> security_master.nse_symbol  -> stockscans "NSE:<symbol>"   (primary)
+         -> security_master.bse_symbol  -> stockscans "BSE:<ticker>"   (BSE-only)
+
+2. **BSE official (fallback)** — stockscans only tracks ~94% of the market, so
+   whatever it misses (the small/illiquid tail) is filled from BSE's own SEBI
+   industry, which every listed scrip has (`ingestion/bse_industry.py`, keyed by
+   scrip code). This lifts coverage to ~99.9%.
+
+Each `industry_map` row records which source classified it (`source` =
+`stockscans_full` / `bse` / `stockscans_daksham`). The only companies left
+`'Unclassified'` are brand-new listings no source has an industry for yet — never
+guessed from the name. If the full stockscans pull fails it falls back to the
+daksham live mapping (still topped up by BSE), and a failed refresh never wipes
+existing tags. ALL orders are re-tagged from the cached map every run, so a
 refreshed classification flows through to existing orders.
