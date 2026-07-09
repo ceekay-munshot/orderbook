@@ -56,7 +56,8 @@ orderbook/
 │   ├── tsconfig.json
 │   └── package.json
 ├── ingestion/                # Python pipeline (runs on GitHub Actions)
-│   ├── main.py               # Entrypoint — Phase 1 fetch+write, Phase 2 PDF-enrich
+│   ├── main.py               # Ingest entrypoint — fetch+write, PDF-enrich, tag from cached map
+│   ├── refresh_industry.py   # Industry entrypoint — (re)build the map + re-tag (own workflow)
 │   ├── config.py             # Loads env vars / GitHub Secrets (never logs values)
 │   ├── d1_client.py          # Runs SQL against Cloudflare D1 via its HTTP API
 │   ├── bse_client.py         # Reads BSE order announcements + value/duration parse
@@ -74,7 +75,8 @@ orderbook/
 │   │   └── 0003_security_master.sql   # BSE<->NSE<->ISIN translator table
 │   └── README.md
 ├── .github/workflows/
-│   └── ingest.yml            # Manual (workflow_dispatch) run of the pipeline
+│   ├── ingest.yml            # Every 6h: fetch orders, enrich PDFs, tag from cached map
+│   └── industry.yml          # Daily: rebuild the industry map (stockscans + BSE) + re-tag
 ├── .env.example              # All env var names (no values)
 ├── .gitignore
 └── README.md
@@ -187,10 +189,6 @@ this stage.
 
 - **Scrape.do client** — `scrapedo_client.py` is a fallback fetcher; the direct
   BSE fetch is primary, so it's rarely exercised.
-- **Industry mapping** — `target_industry` is left NULL by ingestion; a later
-  Stock-Scan step maps each company to its industry.
-- **Scheduling** — `ingest.yml` runs manually; the `schedule:` block is
-  commented out for later.
 - **Dashboard** — filters/search/history still to come.
 
 ## PDF enrichment (Phase 2)
@@ -205,10 +203,16 @@ so repeat runs don't re-download it. `INGEST_LIMIT` caps how many PDFs per run.
 
 ## Industry tagging (Phase 3)
 
-After enrichment, `main.py` tags every order's `target_industry`. Because an
-order can be received by *any* listed company, the classification is built to
-cover the **whole** Indian listed universe (~4,900 companies), from two sources
-and cached in `industry_map` for a few days (`FORCE_INDUSTRY_REFRESH` to re-pull):
+Every order's `target_industry` comes from the `industry_map`. Because an order
+can be received by *any* listed company, that map covers the **whole** Indian
+listed universe (~4,900 companies), from two sources — cached for a few days
+(`FORCE_INDUSTRY_REFRESH` to re-pull):
+
+> **Two workflows.** Building the map is the slow part (thousands of HTTP calls),
+> so it's split out: the **`industry.yml`** workflow (daily) runs
+> `refresh_industry.py` to (re)build the map and re-tag all orders, while the
+> 6-hourly **`ingest.yml`** just tags newly-fetched orders from the *cached* map —
+> so the frequent job stays fast.
 
 1. **stockscans.in (primary)** — the FULL classification (~5,800 companies), with
    the richer taxonomy that matches the daksham dashboard. Resolution:
@@ -227,5 +231,7 @@ Each `industry_map` row records which source classified it (`source` =
 `'Unclassified'` are brand-new listings no source has an industry for yet — never
 guessed from the name. If the full stockscans pull fails it falls back to the
 daksham live mapping (still topped up by BSE), and a failed refresh never wipes
-existing tags. ALL orders are re-tagged from the cached map every run, so a
-refreshed classification flows through to existing orders.
+existing tags — the map is rebuilt via a staging-table swap, so the live table is
+only ever old-full, empty, or new-full, never a half-written partial. ALL orders
+are re-tagged from the map whenever it's (re)built, and the 6-hourly ingest tags
+newly-fetched orders from the cached map, so classification stays current.

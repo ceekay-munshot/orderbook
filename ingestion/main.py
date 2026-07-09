@@ -26,17 +26,12 @@ Env:
   INGEST_FROM_DATE / INGEST_TO_DATE (YYYY-MM-DD, optional) -> explicit overrides
   INGEST_LIMIT (default 10)                 -> max PDFs to enrich per run (cost cap)
   INGEST_MAX_PAGES (default 60)             -> cap on BSE page fetches per run
-  FORCE_MASTER_REBUILD (default off)        -> rebuild the BSE<->NSE<->ISIN
-                                              security master now (else weekly)
-  FORCE_INDUSTRY_REFRESH (default off)      -> re-pull the full stockscans
-                                              industry map now (else ~3-day cache)
 
-There is also a phase-0 build of the `security_master` translator (BSE scrip
-code <-> NSE symbol <-> ISIN), the prerequisite for industry tagging. It is
-cached and rebuilt at most weekly, so it is usually a no-op. Phase 3 then tags
-each order's industry from the FULL stockscans classification, with BSE's own
-SEBI industry filling whatever stockscans doesn't cover so every listed company
-gets classified (cached a few days).
+Phase 3 here is LIGHT: it only tags orders from the CACHED industry_map (cheap),
+so this job stays fast and can run every few hours. Building that map — the
+security_master translator plus the full stockscans + BSE industry pull, the slow
+part — is a SEPARATE job (`refresh_industry.py`, the "Refresh industry
+classification" workflow) that runs on its own, less frequent schedule.
 """
 
 from __future__ import annotations
@@ -638,11 +633,17 @@ def _build_industry_map_rows(
     return rows, source or "bse"
 
 
-def refresh_industry_map(client: D1Client, config: Config) -> None:
+def refresh_industry_map(client: D1Client, config: Config) -> bool:
     """Rebuild industry_map from security_master × stockscans (+ BSE fallback) —
     but at most once every few days (the full pull is large), unless
     FORCE_INDUSTRY_REFRESH is set. On any fetch failure the existing map is kept
-    (never wiped)."""
+    (never wiped).
+
+    Returns True when the map is intact and safe to tag from (cache hit, degraded
+    build kept the old map, or the rebuild landed cleanly); False only when a
+    replace was attempted and FAILED — the live map may be empty, so the caller
+    must NOT re-tag from it this run (the empty map self-heals on the next run).
+    """
     force = _bool_env("FORCE_INDUSTRY_REFRESH")
     try:
         n_map, last, source = client.industry_map_status()
@@ -658,7 +659,7 @@ def refresh_industry_map(client: D1Client, config: Config) -> None:
     ):
         print(f"  industry_map: fresh ({n_map} rows, {source}, updated {last}) — "
               "using cache. Set FORCE_INDUSTRY_REFRESH=1 to re-pull.")
-        return
+        return True
 
     reason = "forced" if force else f"stale/{source or 'empty'}"
     print(f"  refreshing industry map — {reason}")
@@ -666,32 +667,36 @@ def refresh_industry_map(client: D1Client, config: Config) -> None:
         sec_rows = client.security_master_symbol_rows()
     except Exception as exc:  # noqa: BLE001
         print(f"  could not read security_master ({exc}); keeping existing map.")
-        return
+        return True  # map untouched — safe to tag from it
     print(f"  security_master: {len(sec_rows)} companies with an NSE/BSE symbol")
 
     map_rows, source_used = _build_industry_map_rows(config, sec_rows)
     if map_rows is None:
         print("  all industry sources failed (stockscans + BSE) — keeping existing map.")
-        return
+        return True  # map untouched
 
-    # A rebuild REPLACES the whole map (replace_industry_map deletes then inserts),
-    # so a degraded build — a transient stockscans/BSE outage or rate-limit that
-    # resolved only a subset — must not wipe a healthy map and retag most orders
-    # Unclassified. Require the rebuild to retain ~the coverage we already have;
-    # otherwise keep the existing map and retry next run (it's still stale, so the
-    # next run rebuilds again — self-healing once the sources recover). FORCE lets
-    # an operator override this floor deliberately.
+    # A rebuild REPLACES the whole map, so a degraded build — a transient
+    # stockscans/BSE outage or rate-limit that resolved only a subset — must not
+    # wipe a healthy map and retag most orders Unclassified. Require the rebuild
+    # to retain ~the coverage we already have; otherwise keep the existing map and
+    # retry next run (it's still stale, so the next run rebuilds again —
+    # self-healing once the sources recover). FORCE overrides the floor.
     if n_map > 0 and len(map_rows) < n_map * MIN_MAP_RETAIN and not force:
         print(f"  rebuild classified {len(map_rows)} vs {n_map} already mapped "
               f"(< {MIN_MAP_RETAIN:.0%}) — treating as a degraded/partial build, "
               "keeping existing map. Set FORCE_INDUSTRY_REFRESH=1 to override.")
-        return
+        return True  # map untouched
     try:
         n_written = client.replace_industry_map(map_rows, source=source_used or "stockscans")
         print(f"  industry_map rebuilt: {n_written} classified companies "
               f"(source={source_used})")
+        return True
     except Exception as exc:  # noqa: BLE001
-        print(f"  industry_map rebuild failed ({exc}); existing map left in place.")
+        # The staging swap raised — the live map may be empty. Don't tag from it;
+        # it isn't cached as fresh (empty/low source), so the next run rebuilds.
+        print(f"  industry_map rebuild failed ({exc}); NOT re-tagging from a "
+              "possibly-empty map this run — will retry next run.")
+        return False
 
 
 def tag_from_industry_map(client: D1Client) -> None:
@@ -743,20 +748,33 @@ def tag_from_industry_map(client: D1Client) -> None:
             print(f"    {name[:36]} [{scrip}] -> {industry}")
 
 
+def tag_orders_from_cache_pass(client: D1Client) -> None:
+    """Light industry tagging: set each order's target_industry from the CACHED
+    industry_map only (no external pulls). Cheap, so the 6-hourly ingest runs it
+    every time to classify newly-fetched orders. The map itself is (re)built by
+    the separate industry-refresh job — see :func:`tag_orders_pass` /
+    ``refresh_industry.py``. Never crashes the run.
+    """
+    print("\n" + "=" * 40)
+    print("phase 3: tag orders from cached industry map")
+    print("=" * 40)
+    tag_from_industry_map(client)
+
+
 def tag_orders_pass(client: D1Client, config: Config) -> None:
-    """Phase 3: industry tagging for the whole listed universe.
+    """Full industry pass: (re)build the map, then tag every order from it.
 
     Chain: order.bse_scrip_code -> security_master (nse_symbol / bse_symbol) ->
     stockscans industry, with BSE's own SEBI industry filling whatever stockscans
     doesn't cover. Not found anywhere -> 'Unclassified' (never guessed). The
-    classification is cached in industry_map for a few days; orders are re-tagged
-    from it every run. Never crashes the run.
+    stockscans + BSE pull is the slow part, so this runs in its OWN workflow
+    (``refresh_industry.py``), not on every ingest. Never crashes the run.
     """
     print("\n" + "=" * 40)
-    print("phase 3: industry tagging (stockscans + BSE fallback)")
+    print("industry refresh: rebuild map (stockscans + BSE fallback) + tag")
     print("=" * 40)
-    refresh_industry_map(client, config)
-    tag_from_industry_map(client)
+    if refresh_industry_map(client, config):
+        tag_from_industry_map(client)
 
 
 def main() -> int:
@@ -775,10 +793,6 @@ def main() -> int:
     else:
         print("D1 secrets not set -> DRY-RUN (no DB writes; PDF enrichment skipped)")
 
-    # Company translator (BSE<->NSE<->ISIN) — prerequisite for industry tagging.
-    # Cached weekly, so this is usually a no-op.
-    build_security_master_pass(client, config)
-
     # Phase 1 — fetch new BSE orders and write them.
     fetch_and_write(config, client, from_date, to_date)
 
@@ -787,9 +801,12 @@ def main() -> int:
         renormalize_pass(client)  # free: recover numbers from stored phrases
         enrich_pass(client, config, _int_env("INGEST_LIMIT", 10))
 
-    # Phase 3 — tag every order's industry from the live Stock Scan mapping.
+    # Phase 3 (light) — tag orders from the CACHED industry_map. The heavy map
+    # rebuild (security master + stockscans + BSE fallback) is a separate job now
+    # (refresh_industry.py / the "Refresh industry classification" workflow), so
+    # this fast fetch runs every few hours without paying for that pull.
     if writing and client is not None:
-        tag_orders_pass(client, config)
+        tag_orders_from_cache_pass(client)
 
     return 0
 
