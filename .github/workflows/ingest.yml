@@ -17,6 +17,11 @@ on:
         required: false
         default: "5"
         type: string
+      summary_limit:
+        description: "Max order summaries to write this run (INGEST_SUMMARY_LIMIT — cost cap)"
+        required: false
+        default: "20"
+        type: string
   schedule:
     # Every 6 hours (UTC): fetch new orders, read PDFs, tag from the cached map.
     - cron: "0 */6 * * *"
@@ -48,6 +53,8 @@ jobs:
           INGEST_DAYS: ${{ inputs.days || '2' }}
           # PDF-enrichment cap per run (dispatch input, or 10 for scheduled runs)
           INGEST_LIMIT: ${{ inputs.pdf_limit || '10' }}
+          # Order-summary cap per run (dispatch input, or 20 for scheduled runs)
+          INGEST_SUMMARY_LIMIT: ${{ inputs.summary_limit || '20' }}
           # Proxy + APIs
           SCRAPEDO_API_KEY: ${{ secrets.SCRAPEDO_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
