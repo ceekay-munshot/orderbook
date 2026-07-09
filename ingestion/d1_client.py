@@ -13,6 +13,7 @@ Body: {"sql": "...", "params": [...]}
 from __future__ import annotations
 
 import hashlib
+import time
 from typing import Any, Sequence
 
 import requests
@@ -20,6 +21,9 @@ import requests
 from config import Config
 
 CLOUDFLARE_API_BASE = "https://api.cloudflare.com/client/v4"
+
+# HTTP statuses worth retrying — transient Cloudflare-side hiccups, not our bug.
+_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 
 
 class D1Error(RuntimeError):
@@ -112,7 +116,9 @@ class D1Client:
         database_id: str,
         api_token: str,
         *,
-        timeout: float = 30.0,
+        timeout: float = 45.0,
+        retries: int = 3,
+        backoff: float = 1.5,
         session: requests.Session | None = None,
     ) -> None:
         if not (account_id and database_id and api_token):
@@ -122,6 +128,8 @@ class D1Client:
         self._account_id = account_id
         self._database_id = database_id
         self._timeout = timeout
+        self._retries = max(0, retries)
+        self._backoff = backoff
         self._session = session or requests.Session()
         self._session.headers.update(
             {
@@ -148,13 +156,24 @@ class D1Client:
         )
 
     def query(
-        self, sql: str, params: Sequence[Any] | None = None
+        self,
+        sql: str,
+        params: Sequence[Any] | None = None,
+        *,
+        idempotent: bool = True,
     ) -> list[dict[str, Any]]:
         """Run a single SQL statement and return its result rows.
 
         Args:
             sql: A single SQL statement, using ``?`` placeholders for params.
             params: Values to bind to the placeholders, in order.
+            idempotent: When True (the default) a transient failure — a network
+                timeout or a 5xx/429 from the Cloudflare API — is retried with
+                backoff. Safe for SELECTs, DELETEs, UPDATEs, and ON-CONFLICT
+                upserts (re-running them lands the same state). Pass False for a
+                plain INSERT that must not be re-sent (a timed-out request may
+                have committed server-side); the caller retries at a safe
+                granularity instead (see :meth:`replace_industry_map`).
 
         Returns:
             The list of row dicts from the first result set (empty for
@@ -167,29 +186,40 @@ class D1Client:
         if params is not None:
             payload["params"] = list(params)
 
-        try:
-            resp = self._session.post(
-                self._query_url, json=payload, timeout=self._timeout
-            )
-        except requests.RequestException as exc:  # network-level failure
-            raise D1Error(f"D1 request failed: {exc}") from exc
+        attempts = self._retries + 1 if idempotent else 1
+        last: D1Error | None = None
+        for attempt in range(attempts):
+            retryable = False
+            try:
+                resp = self._session.post(
+                    self._query_url, json=payload, timeout=self._timeout
+                )
+            except requests.RequestException as exc:  # network-level failure
+                last = D1Error(f"D1 request failed: {exc}")
+                retryable = True  # timeout / connection reset — worth another try
+            else:
+                try:
+                    body = resp.json()
+                except ValueError as exc:
+                    last = D1Error(
+                        f"D1 returned non-JSON response (HTTP {resp.status_code})"
+                    )
+                    retryable = resp.status_code in _RETRYABLE_STATUS
+                else:
+                    if resp.ok and body.get("success", False):
+                        # `result` is a list of statement results; return the first.
+                        result = body.get("result") or []
+                        if not result:
+                            return []
+                        return result[0].get("results", []) or []
+                    errors = body.get("errors") or [{"message": resp.text}]
+                    last = D1Error(f"D1 API error (HTTP {resp.status_code}): {errors}")
+                    retryable = resp.status_code in _RETRYABLE_STATUS
 
-        try:
-            body = resp.json()
-        except ValueError as exc:
-            raise D1Error(
-                f"D1 returned non-JSON response (HTTP {resp.status_code})"
-            ) from exc
-
-        if not resp.ok or not body.get("success", False):
-            errors = body.get("errors") or [{"message": resp.text}]
-            raise D1Error(f"D1 API error (HTTP {resp.status_code}): {errors}")
-
-        # `result` is a list of statement results; return rows from the first.
-        result = body.get("result") or []
-        if not result:
-            return []
-        return result[0].get("results", []) or []
+            if not retryable or attempt >= attempts - 1:
+                break
+            time.sleep(self._backoff * (2 ** attempt))
+        raise last or D1Error("D1 request failed")
 
     def upsert_order(self, order: dict[str, Any]) -> list[dict[str, Any]]:
         """Insert an order, or update it in place if its dedup_key already exists.
@@ -363,7 +393,8 @@ class D1Client:
         rows: Sequence[dict[str, Any]],
         *,
         source: str = "stockscans_full",
-        batch: int = 400,
+        batch: int = 300,
+        attempts: int = 3,
     ) -> int:
         """Rebuild industry_map from scratch (DELETE then batch INSERT).
 
@@ -373,17 +404,23 @@ class D1Client:
         (industry is NOT NULL). Each row's own ``source`` is stamped (falling
         back to the ``source`` arg), so a mixed build keeps per-company
         provenance; ``sub_industry`` and updated_at are written too.
+
+        The map is now ~4,900 rows (BSE fallback ~tripled it), so the whole
+        DELETE + batched-INSERT sequence is retried as ONE unit on a transient D1
+        failure: each attempt re-DELETEs first, so a mid-write timeout can never
+        leave a partial map or duplicate rows (the inserts are plain INSERTs, so
+        they're sent with idempotent=False — no per-statement retry that could
+        double-insert a batch whose response merely timed out).
         """
-        self.query("DELETE FROM industry_map")
         cols = (
             "(bse_scrip_code, isin, nse_symbol, company_name, "
             "name_normalized, industry, sub_industry, source, updated_at)"
         )
-        written = 0
+        # Pre-render every statement once (DELETE first, then the INSERT batches).
+        statements = ["DELETE FROM industry_map"]
         for i in range(0, len(rows), batch):
-            chunk = rows[i : i + batch]
             tuples = []
-            for r in chunk:
+            for r in rows[i : i + batch]:
                 name = r.get("company_name")
                 tuples.append(
                     "("
@@ -402,9 +439,19 @@ class D1Client:
                     )
                     + ")"
                 )
-            self.query(f"INSERT INTO industry_map {cols} VALUES " + ", ".join(tuples))
-            written += len(chunk)
-        return written
+            statements.append(f"INSERT INTO industry_map {cols} VALUES " + ", ".join(tuples))
+
+        last: Exception | None = None
+        for attempt in range(max(1, attempts)):
+            try:
+                for stmt in statements:  # DELETE clears any partial write first
+                    self.query(stmt, idempotent=False)
+                return len(rows)
+            except D1Error as exc:
+                last = exc
+                if attempt < attempts - 1:
+                    time.sleep(self._backoff * (2 ** attempt))
+        raise last or D1Error("industry_map replace failed")
 
     def set_target_industry_bulk(self, id_to_industry: dict[Any, str]) -> int:
         """Set orders.target_industry for many orders efficiently.
