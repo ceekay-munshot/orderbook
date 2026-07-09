@@ -68,6 +68,13 @@ from stockscans import (
 # refreshes — it's larger than the daksham file, so we don't re-fetch every run.
 INDUSTRY_CACHE_DAYS = 3
 
+# A rebuilt industry_map must retain at least this fraction of the coverage the
+# existing map already has, or it's treated as a degraded/partial build (a source
+# outage that resolved only a subset) and discarded so it can't wipe a good map.
+# The BSE tail is ~6% of the universe, so 0.95 catches "BSE fallback silently
+# dropped" as well as a thin BSE-only result, while tolerating normal churn.
+MIN_MAP_RETAIN = 0.95
+
 # BSE serves each PDF at AttachLive first; older ones move to AttachHis. We fall
 # back to the historical path by swapping the folder in the stored URL.
 _ATTACH_LIVE = "AttachLive"
@@ -665,6 +672,19 @@ def refresh_industry_map(client: D1Client, config: Config) -> None:
     map_rows, source_used = _build_industry_map_rows(config, sec_rows)
     if map_rows is None:
         print("  all industry sources failed (stockscans + BSE) — keeping existing map.")
+        return
+
+    # A rebuild REPLACES the whole map (replace_industry_map deletes then inserts),
+    # so a degraded build — a transient stockscans/BSE outage or rate-limit that
+    # resolved only a subset — must not wipe a healthy map and retag most orders
+    # Unclassified. Require the rebuild to retain ~the coverage we already have;
+    # otherwise keep the existing map and retry next run (it's still stale, so the
+    # next run rebuilds again — self-healing once the sources recover). FORCE lets
+    # an operator override this floor deliberately.
+    if n_map > 0 and len(map_rows) < n_map * MIN_MAP_RETAIN and not force:
+        print(f"  rebuild classified {len(map_rows)} vs {n_map} already mapped "
+              f"(< {MIN_MAP_RETAIN:.0%}) — treating as a degraded/partial build, "
+              "keeping existing map. Set FORCE_INDUSTRY_REFRESH=1 to override.")
         return
     try:
         n_written = client.replace_industry_map(map_rows, source=source_used or "stockscans")

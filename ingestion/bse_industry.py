@@ -54,7 +54,7 @@ def _pick_industry(data: dict[str, Any]) -> tuple[str | None, str | None]:
     return industry, sub
 
 
-def _fetch_one(scrip_code: str, *, timeout: float = 20.0, retries: int = 1):
+def _fetch_one(scrip_code: str, *, timeout: float = 12.0, retries: int = 1):
     """Return (scrip_code, {'industry','sub_industry'} | None). Best-effort."""
     params = {"quotetype": "EQ", "scripcode": scrip_code, "seriesid": ""}
     for attempt in range(retries + 1):
@@ -80,20 +80,36 @@ def fetch_bse_industries(
     scrip_codes: list[str],
     *,
     max_workers: int = 16,
+    budget_seconds: float = 180.0,
 ) -> dict[str, dict[str, str | None]]:
     """Return {scrip_code -> {'industry','sub_industry'}} from BSE's per-scrip
     classification endpoint, fetched concurrently.
 
-    Best-effort by design: this is a fallback used only for the companies the
-    primary (stockscans) source didn't classify, so scrips that don't resolve
-    are omitted rather than raising. An empty input returns an empty dict.
+    Best-effort by design: this is a fallback for companies the primary
+    (stockscans) source didn't classify, so scrips that don't resolve are omitted
+    rather than raising. An empty input returns an empty dict.
+
+    Hard-bounded by ``budget_seconds``: when the primary source is fully down the
+    caller may pass the whole listed universe, and a slow/blackholed BSE endpoint
+    must not turn a scheduled ingest into an hours-long hang. Once the budget is
+    spent we stop waiting and return whatever resolved so far (still-queued
+    requests are cancelled; the caller's coverage guard then keeps the old map if
+    too little came back).
     """
     wanted = [str(s).strip() for s in scrip_codes if str(s or "").strip()]
     if not wanted:
         return {}
     result: dict[str, dict[str, str | None]] = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
-        for scrip, info in pool.map(_fetch_one, wanted):
-            if info:
-                result[scrip] = info
+        futures = [pool.submit(_fetch_one, s) for s in wanted]
+        try:
+            for fut in concurrent.futures.as_completed(futures, timeout=budget_seconds):
+                scrip, info = fut.result()
+                if info:
+                    result[scrip] = info
+        except concurrent.futures.TimeoutError:
+            # Budget spent before every request finished — cancel the queued ones
+            # (running ones finish as the pool drains) and keep what we have.
+            for fut in futures:
+                fut.cancel()
     return result
