@@ -290,6 +290,25 @@ class D1Client:
         )
         return self.query(sql, [int(limit)])
 
+    def orders_text_for_cleanup(self) -> list[dict[str, Any]]:
+        """Return (id, company_name, headline, description, summary, category) for
+        every order — so a caller can spot non-commercial (legal/court) rows to
+        delete."""
+        return self.query(
+            "SELECT id, company_name, headline, description, summary, category "
+            "FROM orders"
+        )
+
+    def delete_orders(self, ids: Sequence[Any]) -> int:
+        """Delete orders by id. Returns the number requested. Ids are coerced to
+        int, so this is injection-safe even though they're inlined."""
+        clean = [int(i) for i in ids if i is not None]
+        if not clean:
+            return 0
+        id_list = ", ".join(str(i) for i in clean)
+        self.query(f"DELETE FROM orders WHERE id IN ({id_list})")
+        return len(clean)
+
     def orders_needing_summary(self, limit: int) -> list[dict[str, Any]]:
         """Return orders that still have no plain-English summary but do have some
         text to write one from (the PDF text, else the description/headline).

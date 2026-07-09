@@ -113,6 +113,34 @@ def classify(ann: dict[str, Any]) -> tuple[str | None, str | None]:
     return None, None
 
 
+# Filings BSE files under "Award of Order / Receipt of Order" that are NOT
+# commercial order wins — court / tribunal / insolvency / arbitration rulings.
+# The word "order" is overloaded (a court ORDER vs a purchase ORDER), so these
+# land in the same subcategory. They have no value / customer / duration, so we
+# keep them OUT of the order book.
+_NONCOMMERCIAL_RE = re.compile(
+    r"\b(?:nclt|nclat|national company law tribunal|appellate tribunal|tribunal|"
+    r"arbitration|arbitral|insolvency|winding[\s-]?up|liquidation|liquidator|"
+    r"moratorium|resolution plan|debt recovery|\bibc\b|corporate insolvency)\b",
+    re.IGNORECASE,
+)
+
+
+def text_is_noncommercial(text: str | None) -> bool:
+    """True if ``text`` reads like a legal/court/tribunal order, not an order win."""
+    return bool(text and _NONCOMMERCIAL_RE.search(text))
+
+
+def is_noncommercial(ann: dict[str, Any]) -> bool:
+    """True if a BSE announcement is a legal/court order, not a commercial win."""
+    text = " ".join(
+        str(v)
+        for v in (ann.get("NEWSSUB"), ann.get("HEADLINE"), ann.get("SUBCATNAME"))
+        if v
+    )
+    return text_is_noncommercial(text)
+
+
 # --- parsing -----------------------------------------------------------------
 
 def to_iso8601(raw: Any) -> str | None:
@@ -593,5 +621,7 @@ def iter_matched(
     for ann in announcements:
         rule, detail = classify(ann)
         if rule is None:
+            continue
+        if is_noncommercial(ann):  # court/tribunal/insolvency order, not a win
             continue
         yield parse_announcement(ann), rule, detail
